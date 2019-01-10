@@ -1,0 +1,191 @@
+---
+title: "tb network clinical and social mixing ergms"
+author: "author: kristin"
+date: "started 10/5/2017"
+most recent edit: "1/8/2019"
+output: html_document
+---
+
+```{r setup and call packages, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(GGally)
+library(network)
+library(sna)
+library(statnet)
+library(tidyverse)
+library(EpiModel)
+```
+
+```{r, create networks, include=FALSE}
+
+##############################################
+# CREATE NETWORK
+##############################################
+
+#create directed network objects (shown for directed network with 5 SNP threshold - main model)
+
+dnet_le5_pMDRdxdiff <- as.network(x = mat_dxdiffpMDR5snp, # the network object
+                  directed = TRUE, # specify whether the network is directed
+                  loops = FALSE, # do we allow self ties (should not allow them)
+                  matrix.type = "adjacency" # the type of input
+                  )
+
+
+```
+
+_create network with vertex (node) attributes_
+```{r, add vertex attributes to network}
+
+##############################################
+# ADD VERTERX ATTRIBUTES
+##############################################
+
+#add vertex attributes to networks (shown for directed network with 5 SNP threshold - main model)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "coughdur_mo", t2_order$co_dur_mo)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "coughdur_mowk", t2_order$co_dur_mowk)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "cluster", t1_order$Cluster)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "rflp", t1_order$rflp)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "hp", t1_order$hp)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "smgrade", t2_order$smgrade_num)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "smstat", t2_order$smstat)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "cav", t2_order$cav_num)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "HIV", t1_order$HIV_all)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "hiv_arv", t1_order$hiv_arv)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "sex", t1_order$Female_sex)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "age_cat", t1_order$age_cat)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "resdis", t4_order$District_num)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "prevMDR", t1_order$prevMDR_all)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "yr", t1_order$year)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "hp", t1_order$hp)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "urbcomb", t6_order$allurbcomb)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "urbcomb2", t6_order$allurbcomb2)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "urbcomb_predst", t6_order$allurbcomb_predst)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "urbcomb2_predst", t6_order$allurbcomb2_predst)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "tothospmos", t6_order$tothospmos)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "totcon", t6_order$total.contacts)
+
+```
+
+_ergms, in directed and non-directed networks_
+```{r, ergms}
+
+model.0 <- ergm(net_le10~edges)
+summary(model.0)
+
+###################################################
+#
+# CLINICAL INFECTIOUSNESS VARIABLES (Aim 2)
+#
+###################################################
+
+######################
+# UNDIRECTED networks
+######################
+
+model.1.u <- ergm(net_le5 ~ edges + nodefactor("coughdur_mo") + nodefactor("smgrade") + nodefactor("cav") + nodefactor("hiv_arv") +nodefactor("sex") +  nodefactor("age_cat"))
+summary(model.1.u)
+
+######################
+# DIRECTED networks
+######################
+
+#Main model
+model.1.d <- ergm(dnet_le5_pMDRdxdiff ~ edges + nodeofactor("coughdur_mo") + nodeofactor("smgrade") + nodeofactor("cav") + nodeofactor("hiv_arv") +nodeofactor("sex") +  nodeofactor("age_cat"))
+summary(model.1.d)
+
+#Alternative model 1
+#parsimonious model, directed networks (no sex)
+model.3.d <- ergm(dnet_le5_pMDRdxdiff ~ edges + nodeofactor("coughdur_mo") + nodeofactor("smgrade") + nodeofactor("cav") + nodeofactor("hiv_arv") +  nodeofactor("age_cat"))
+summary(model.3.d)
+
+#Alternative model 2
+#full model (includung hp (strain) and year enrolled)
+model.4.d <- ergm(dnet_le5_pMDRdxdiff ~ edges + nodeofactor("coughdur_mo") + nodeofactor("smgrade") + nodeofactor("cav") + nodeofactor("hiv_arv") +nodeofactor("sex") +  nodeofactor("age_cat")) + nodeofactor("yr") + nodeofactor("hp"))
+summary(model.4.d)
+
+#Alternative model 3
+#alternate variables (collapsed cough duration)
+model.5.d <- ergm(dnet_le5_pMDRdxdiff ~ edges + nodeofactor("coughdur_mored") + nodeofactor("smstat") + nodeofactor("cav") + nodeofactor("hiv_arv") +nodeofactor("sex") +  nodeofactor("age_cat"))
+summary(model.5.d)
+
+##Alternative edge definition 1
+#different SNP threshold (3SNP)
+model.6.d <- ergm(dnet_le3_pMDRdxdiff ~ edges + nodeofactor("coughdur_mo") + nodeofactor("smgrade") + nodeofactor("cav") + nodeofactor("hiv_arv") +nodeofactor("sex") +  nodeofactor("age_cat"))
+summary(model.6.d)
+
+##Alternative edge definition 2
+#different SNP threshold (10SNP)
+model.7.d <- ergm(dnet_le10_pMDRdxdiff ~ edges + nodeofactor("coughdur_mo") + nodeofactor("smgrade") + nodeofactor("cav") + nodeofactor("hiv_arv") +nodeofactor("sex") +  nodeofactor("age_cat") + nodeofactor("yr") + nodeofactor("hp"))
+summary(model.7.d)
+
+##Alternative edge definition 3
+#WGS + RFLP cluster (clust_le3)
+model.8.d <- ergm(dnet_clust_le3 ~ edges + nodeofactor("coughdur_mo") + nodeofactor("smgrade") + nodeofactor("cav") + nodeofactor("hiv_arv") +nodeofactor("sex") +  nodeofactor("age_cat"))
+summary(model.8.d)
+
+
+
+###################################################
+#
+# SOCIAL MIXING VARIABLES (Aim 3)
+#
+###################################################
+
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "urbcomb_red", t6_order$allurbcombred)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "urbcomb2_red", t6_order$allurbcomb2red)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "totcon_cat", t6_order$total.contacts_cat)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "totcon_catred", t6_order$total.contacts_catred)
+set.vertex.attribute(dnet_le5_pMDRdxdiff, "tothomos_cat", t6_order$tothomos_cat)
+
+######################
+# UNDIRECTED networks
+######################
+
+model.1.u <- ergm(net_le5 ~ edges + nodefactor("urbcomb") + nodefactor("tothomos_cat") + nodefactor("totcon_cat") + nodefactor("coughdur_mo") + nodefactor("smgrade") + nodefactor("cav") + nodefactor("hiv_arv") +nodefactor("sex") +  nodefactor("age_cat"))
+summary(model.1.u)
+
+######################
+# DIRECTED networks
+######################
+
+#Main model
+#urban contact var 1 - number of domains (range: 0-3)
+model.1.d <- ergm(dnet_le5_pMDRdxdiff ~ edges + nodeofactor("urbcomb") + nodeofactor("tothomos_cat") + nodeofactor("totcon_cat") + nodefactor("coughdur_mo") + nodefactor("smgrade") + nodefactor("cav") + nodefactor("hiv_arv") +nodefactor("sex") +  nodefactor("age_cat"))
+summary(model.1.d)
+
+#Alternative model 1
+#parsimonious model, directed networks (no sex)
+model.2.d <- ergm(dnet_le5_pMDRdxdiff ~ edges + nodeofactor("urbcomb") + nodeofactor("tothomos_cat") + nodeofactor("totcon_cat") + nodefactor("coughdur_mo") + nodefactor("smgrade") + nodefactor("cav") + nodefactor("hiv_arv") + nodefactor("age_cat"))
+summary(model.2.d)
+
+#Alternative model 2
+#full model (includung hp (strain) and year enrolled)
+model.3.d <- ergm(dnet_le5_pMDRdxdiff ~ edges + nodeofactor("urbcomb") + nodeofactor("tothomos_cat") + nodeofactor("totcon_cat") + nodeofactor("coughdur_mo") + nodeofactor("smgrade") + nodefactor("cav") + nodeofactor("hiv_arv") +nodeofactor("tothomos_cat") +  nodeofactor("age_cat") + nodeofactor("hp") + nodeofactor("yr"))
+summary(model.3.d)
+
+#Alternative model 3
+#urban contact variable 2 - number of locations (range: 0-15)
+model.4.d <- ergm(dnet_le5_pMDRdxdiff ~ edges + nodeofactor("urbcomb2_red") + nodeofactor("tothomos_cat") + nodeofactor("totcon_cat") + nodefactor("coughdur_mo") + nodefactor("smgrade") + nodefactor("cav") + nodefactor("hiv_arv") +nodefactor("sex") +  nodefactor("age_cat"))
+summary(model.4.d)
+
+#Alternative model 4
+#alternative vars (reduced number of categories for urban contact, close contacts)
+model.5.d <- ergm(dnet_le5_pMDRdxdiff ~ edges + nodeofactor("urbcomb_red") + nodeofactor("tothomos_cat") + nodeofactor("totcon_catred") + nodefactor("coughdur_mo") + nodefactor("smgrade") + nodefactor("cav") + nodefactor("hiv_arv") +nodefactor("tothomos_cat") +  nodefactor("age_cat"))
+summary(model.5.d)
+
+##Alternative edge definition 1
+#different SNP threshold (3SNP)
+model.6.d <- ergm(dnet_le3_pMDRdxdiff ~ edges + nodeofactor("urbcomb") + nodeofactor("tothomos_cat") + nodeofactor("totcon_cat") + nodefactor("coughdur_mo") + nodefactor("smgrade") + nodefactor("cav") + nodefactor("hiv_arv") +nodefactor("sex") +  nodefactor("age_cat"))
+summary(model.6.d)
+
+##Alternative edge definition 2
+#different SNP threshold (10SNP)
+model.7.d <- ergm(dnet_le10_pMDRdxdiff ~ edges + nodeofactor("urbcomb") + nodeofactor("tothomos_cat") + nodeofactor("totcon_cat") + nodefactor("coughdur_mo") + nodefactor("smgrade") + nodefactor("cav") + nodefactor("hiv_arv") +nodefactor("sex") +  nodefactor("age_cat"))
+summary(model.7.d)
+
+##Alternative edge definition 3
+#WGS + RFLP cluster (clust_le3)
+model.8.d <- ergm(dnet_clust_le3_pMDRdxdiff ~ edges + nodeofactor("urbcomb") + nodeofactor("tothomos_cat") + nodeofactor("totcon_cat") + nodefactor("coughdur_mo") + nodefactor("smgrade") + nodefactor("cav") + nodefactor("hiv_arv") +nodefactor("sex") +  nodefactor("age_cat"))
+summary(model.8.d)
+
+```
