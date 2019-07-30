@@ -5,7 +5,7 @@ Social mixing and clinical factors associated with XDR TB transmission in KwaZul
 
 This repository includes source code for our analysis of factors associated with extensively drug-resistant (XDR) tuberculosis (TB) transmission in South Africa.
 
-The models described are run in R using the [EpiModel](www.epimodel.org) software.
+The models described are run in R using the [EpiModel](https://www.epimodel.org/) software.
 
 ![Transmission network of XDR TB in KwaZulu-Natal, South Africa](https://github.com/kbratnelson/tb-ergms/blob/master/TransmissionHeterogeneity/Nelson_Fig1.png)
 
