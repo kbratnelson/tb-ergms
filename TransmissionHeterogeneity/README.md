@@ -1,30 +1,6 @@
 Social mixing and clinical factors associated with XDR TB transmission in KwaZulu-Natal, South Africa
 ================
 
-<style type="text/css">
-
-body{ /* Normal  */
-      font-size: 14px;
-  }
-h1.title {
-  font-size: 30px;
-  color: Black;
-}
-h1 { /* Header 1 */
-  font-size: 28px;
-}
-h2 { /* Header 2 */
-    font-size: 22px;
-}
-h3 { /* Header 3 */
-  font-size: 18px;
-}
-code.r{ /* Code block */
-    font-size: 12px;
-}
-
-</style>
-
 ------------------------------------------------------------------------
 
 This repository includes source code for our analysis of factors associated with extensively drug-resistant (XDR) tuberculosis (TB) transmission in South Africa.
