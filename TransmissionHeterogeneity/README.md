@@ -29,5 +29,5 @@ Identifying factors that lead to many transmissions, including contact with urba
 Citation
 --------
 
-Forthcoming!
+Forthcoming!  
 [Pre-publication version here](https://academic.oup.com/cid/advance-article/doi/10.1093/cid/ciz636/5531655)
