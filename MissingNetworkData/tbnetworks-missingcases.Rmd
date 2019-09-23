@@ -1,0 +1,3774 @@
+---
+title: "Modeling missing cases and transmission links in networks of extensively drug-resistant tuberculosis in KwaZulu-Natal, South Africa"
+author: "Kristin Nelson"
+date: "9/23/2019"
+output: html_document
+---
+
+Some general notes about this document:
+
+To run this code, download all files at this [GitHub repository](https://github.com/kbratnelson/tb-ergms/tree/master/MissingNetworkData).
+
+The script fodler contains this RMarkDown document, the Output folder contains all output from code, and the the Data folder contains other necessary files to run the following code.
+
+Although this code is set up to run models, the network model objects are included in the Output folder and can be loaded in for post-processing.
+
+See the Technical Appendix to the manuscript for more information on model specification and parameters.
+
+
+Some general notes about this model:
+
+The network models in this study were used to represent and simulate transmission networks of active tuberculosis (TB) cases. Links, or edges, in modeled networks represent a transmission event that occurred between two cases in the network. 
+
+Modeled networks do not involve individuals (1) infected with TB but whom did not progress to active disease or (2) exposed contacts of TB cases. Rather, modeled networks reflect all transmission events observed from a sample of cases enrolled in our transmission study of XDR TB, which enrolled patients over a four-year period. Note that this network does not include transmission events that occurred either before the study period began or after it ended. 
+
+Moreover, this network is comprised of cases with extensively drug-resistant (XDR) TB. Importantly, not all cases of XDR TB were infected with XDR TB; rather, they acquired resistance as a result of inadequate treatment of a more drug-susceptible strain of TB. For simplicity, we ignore this feature of drug-resistant TB epidemiology when modeling the transmission networks in this study. Moreover, it has been shown that the vast majority of XDR TB are due to transmission of already-resistant strains, rather than acquired resistance. Of note, the full networks that we modeled do include unconnected nodes, or cases, which could represent individuals who acquired their XDR through inadequate treatment and therefore would not be connected to a source case in the network. So, our models indirectly account for the possibility that some XDR TB is acquired rather than transmitted.
+
+First we need to load some necessary packages.
+
+```{r, load packages}
+  pacman::p_load(GGally, network, sna, statnet, tidyverse, EpiModel, ergm, here, Matching)
+```
+
+The Transmission of XDR TB (TRAX) study is a cross-sectional study that enrolled 404 XDR TB cases from KwaZulu-Natal province, South Africa from 2011-2014. This study collected clinical, demographic and social network data from enrolled cases. The primary aim of this study was to estimate the proportion of XDR TB cases due to transmission, as compared to those due to acquired resistance. The major finding of this study was that at least 70% of XDR cases in this settings are due to transmission.
+
+We created sequencing-based networks using pairwise differences between Mtb sequences. We considered fewer than 5 single nucleotide polymorphisms a transmission link and constructed an undirected network in which each node represented a case and each edge represented a transmission link. We considered several SNP thresholds, as the appropriate threshold to define a direct transmission event between two cases may vary by setting, study design, and SNP calling pipeline used. Of note, our empirical network also makes the assumption that individuals are infected with only the sequenced TB variant. While multiple infections are common in high TB incidence settings, this assumption is likely reasonable given the relatively low force of infection of XDR TB.
+
+In this empirical undirected network, the maximum degree was 62, there were 162 (47%) of cases with no links (degree = 0), and 62 (18%) of cases with 10 or more links (degree <= 10). See Supplemental Tables 1 and 3 for more descriptive characteristics of the empirical network defined by 5 and 3 SNPs, respectively.
+
+```{r, observed network specs}
+
+# In the TRAX study, we sampled 350 XDR TB cases. Using a threshold of 5 SNPs, the transmission network comprising these cases involved 740 transmission links.
+n <- 350
+edges <- 740
+nw <- network.initialize(n = n, directed = TRUE)
+
+```
+
+
+In the model, each case in the network was assigned specific clinical and demographic attributes according to pre-defined distributions. Each attribute is represented by a ‘nodefactor’ term in the network model. (Some ‘nodefactor’ terms represented the joint distributions of two attributes, see Joint Distributions section.) This allowed the number of links to vary by an individual’s attributes. We defined ‘target statistics’ for the number of links, or edges, attributed to cases with a given attribute in the network. (For example, the target statistic for the HIV nodefactor term was the number of edges involving HIV-positive nodes, or the number of transmission events in the network involving HIV-positive cases.)
+
+For attributes with well-studied effects on infectiousness (i.e., smear status), we used estimates from the literature to define target statistics for the corresponding nodefactor term in our models.  In the absence of available data from the literature, we used data collected from our transmission study. (Ultimately, we used data from our transmission study for only two parameters: the relationship between transmission risk and cough duration and the distribution of XDR TB strain type in KwaZulu-Natal. This information was not readily available outside our study.)  The attributes assigned to each case collectively influence the number of other cases to whom that case is connected in the network. 
+
+Models with target statistics specified for all levels of every attribute did not easily converge, so we reduced the number of target statistics for attributes with more than four categories. For these variables, we used the 3–4 categories corresponding to the highest number of edges as target statistics to parameterize models. Using these target statistics, we simulated full transmission networks from each model.
+
+
+```{r, set up networks and target stats}
+
+# For main analysis, assume 2000 cases (see Technical Appendix to manuscript for justification)
+n_sim <- 2000
+
+# We'll need to assume different mean degrees (mean number of links per case) for modeled networks, since we don't know what this should be.
+mds <- matrix(NA, nrow=200, ncol=2)
+mds[,1] <- c(1:200)        
+mds[,2] <- (mds[,1]*n_sim)/2         # for a given number of cases and given mean degree in the overall network, this is the number of edges in the network.
+
+
+
+#-----------------------------------#
+#ADD IN NODE ATTRIBUTES
+#-----------------------------------#
+
+
+
+
+# First, need to assign characteristics to *nodes* (cases) in the network according to distributions.
+
+
+
+
+prophp <- 0.75      # proportion with HP strain (LAM4 KZN)
+
+propyr1 <- 0.25     # proportion enrolled in year 1 of study
+propyr2 <- 0.25     # proportion enrolled in year 2 of study
+propyr3 <- 0.25     # proportion enrolled in year 3 of study
+propyr4 <- 0.25     # proportion enrolled in year 4 of study
+
+# Joint distributions of HIV/age, smear status/age
+    # age categories are: < 15, 16-34, 35-54, 55+
+    # HIV categories are: positive, negative
+    # smear status categories are: positive, negative
+prophiv_age <- c(0.01, 0.12, 0.04, 0.05, 0.02, 0.38, 0.35, 0.03)    
+propsmstat_age <- c(0.01, 0.16, 0.12, 0.03, 0.02, 0.34, 0.27, 0.05)
+
+# Distribution of cough duration by category 
+    # cough duration categories are: no cough, 1 month cough, 2 months cough, 3 months cough, 4 months cough, 5 months cough
+propcough <- c(0.37, 0.17, 0.15, 0.21, 0.05, 0.05)
+
+# Create distributions of node attributes 
+hp <- rbinom(n_sim, 1, prophp)
+y_enroll <- sample(1:4, n_sim, replace=TRUE)
+cough <- sample(0:5, n_sim, prob=propcough, replace=TRUE) 
+   # joint distributions
+hiv_age <- sample(0:7, n_sim, prob=prophiv_age, replace=TRUE) #8 categories (4*2): hiv0_age1, hiv0_age2, hiv0_age3, hiv0_age4, hiv1_age1, hiv1_age2, hiv1_age3, hiv1_age4)
+smstat_age <- sample(0:7, n_sim, prob=propsmstat_age, replace=TRUE) #8 categories (4*2): sm0_age1, sm0_age2, sm0_age3, sm0_age4, sm1_age1, sm1_age2, sm1_age3, sm1_age4)
+
+
+
+
+# Next, need to calculate number of *edges* that should be assocaited with different characteristics.
+
+
+
+
+# Define mean number of links by attribute (Note: these values use the the network: dnet_le5_pMDR_dxdiff_gt60)
+  # Year enrolled
+mn.2011 <- 8 
+mn.2012 <- 5.6 
+mn.2013 <- 5.8 
+mn.2014 <- 6.4 
+   # TB Strain (LAM4 KZN/non-LAM4 KZN)
+mn.hp <- 8.3 
+mn.nonhp <- 0.2
+
+# Define the overall mean degree in empirical TRAX network (using 5 SNP threshold)
+md.trax.le5 <- 6.3
+
+md <- c(2:7, 10, 15, 20, 25, 30, 40, 50)
+
+
+# Now, calculate target statistics for each attribute of cases in the network (i.e., how many edges in the network correspond to cases with this attribute?)
+
+## TB strain: hp/lam4
+mn.hp.rel <- mn.hp/md.trax.le5 #relative mean degree in trax (empiric) network
+mn.nonhp.rel <- mn.nonhp/md.trax.le5 #relative mean degree in trax (empiric) network
+
+hp_nfstats_all <- list()
+
+for(i in(1:200)){
+  
+md.hp <- mn.hp.rel*i
+md.nonhp <- (i - (md.hp * prophp))/(1-prophp)
+
+assign((paste0("edges.hp.md", i)), (md.hp * sum(hp == 1)))
+assign(paste0("edges.nonhp.md", i), md.nonhp * sum(hp == 0))
+
+hp_nfstats <- numeric(2)
+hp_nfstats[1] <- md.hp * sum(hp == 1)
+hp_nfstats[2] <- md.nonhp * sum(hp == 0)
+
+hp_nfstats_all[[i]] <- hp_nfstats
+}
+
+#check that hp + nonhp edges add up to total
+#(edges.hp.md2 + edges.nonhp.md2)/2 
+#edges_sim_md2
+
+## year
+mn.2011.rel <- mn.2011/md.trax.le5
+mn.2012.rel <- mn.2012/md.trax.le5
+mn.2013.rel <- mn.2013/md.trax.le5
+mn.2014.rel <- mn.2014/md.trax.le5
+
+yr_nfstats_all <- list()
+
+for(i in(1:200)){
+  
+md.2011 <- mn.2011.rel*i
+md.2012 <- mn.2012.rel*i
+md.2013 <- mn.2013.rel*i
+md.2014 <- ((i - ((md.2011*propyr1) + (md.2012*propyr2) + (md.2013*propyr3))) / (1-(propyr1 + propyr2 + propyr3)))
+
+assign(paste0("edges.2011.md", i), md.2011 * sum(y_enroll == 1))
+assign(paste0("edges.2012.md", i), md.2012 * sum(y_enroll == 2))
+assign(paste0("edges.2013.md", i), md.2013 * sum(y_enroll == 3))
+assign(paste0("edges.2014.md", i), md.2014 * sum(y_enroll == 4))
+
+yr_nfstats <- numeric(4)
+yr_nfstats[1] <- md.2011 * sum(y_enroll == 1)
+yr_nfstats[2] <- md.2012 * sum(y_enroll == 2)
+yr_nfstats[3] <- md.2013 * sum(y_enroll == 3)
+yr_nfstats[4] <- md.2014 * sum(y_enroll == 4)
+
+yr_nfstats_all[[i]] <- yr_nfstats
+}
+
+## cough - 
+mn.cough0 <- 5.0
+mn.cough1 <- 6.5
+mn.cough2 <- 8.1
+mn.cough3 <- 8.1
+mn.cough4 <- 4.6
+mn.cough5 <- 3.7
+# SOURCE
+# TRAX study
+
+
+#normalize joint distributions, HIV and age/smear and age
+mn.hivneg_agecat15  <- 1 * 1  * md.trax.le5
+mn.hivneg_agecat1634  <- 1 * 1.58 * md.trax.le5
+mn.hivneg_agecat3554  <- 1 * 0.98 * md.trax.le5
+mn.hivneg_agecat55  <- 1 * 0.75 * md.trax.le5
+mn.hivpos_agecat15  <- 1 * 1 * md.trax.le5
+mn.hivpos_agecat1634  <- 1 * 1.58 * md.trax.le5
+mn.hivpos_agecat3554  <- 1 * 0.98 * md.trax.le5
+mn.hivpos_agecat55  <- 1 * 0.75 * md.trax.le5
+
+mn.smneg_agecat15  <- 0.25 * 1 * md.trax.le5
+mn.smneg_agecat1634  <- 0.25 * 1.58 * md.trax.le5
+mn.smneg_agecat3554  <- 0.25 * 0.98 * md.trax.le5
+mn.smneg_agecat55  <- 0.25 * 0.75 * md.trax.le5
+mn.smpos_agecat15  <- 1 * 1 * md.trax.le5
+mn.smpos_agecat1634  <- 1 * 1.58 * md.trax.le5
+mn.smpos_agecat3554  <- 1 * 0.98 * md.trax.le5 
+mn.smpos_agecat55  <- 1 * 0.75 * md.trax.le5
+# SOURCE
+# Abu-Raddad et al. PNAS 2009 (smear)
+# Wood et al. Plos One 2012 (age)
+
+mn.hivneg_agecat15.rel <- mn.hivneg_agecat15/md.trax.le5
+mn.hivneg_agecat1634.rel <- mn.hivneg_agecat1634/md.trax.le5
+mn.hivneg_agecat3554.rel <- mn.hivneg_agecat3554/md.trax.le5
+mn.hivneg_agecat55.rel <- mn.hivneg_agecat55/md.trax.le5
+
+mn.hivpos_agecat15.rel <- mn.hivpos_agecat15/md.trax.le5
+mn.hivpos_agecat1634.rel <- mn.hivpos_agecat1634/md.trax.le5
+mn.hivpos_agecat3554.rel <- mn.hivpos_agecat3554/md.trax.le5
+mn.hivpos_agecat55.rel <- mn.hivpos_agecat55/md.trax.le5
+
+
+
+# Calculate target statistics at each mean degree
+
+#hiv and age
+hivage_nfstats_all <- list()
+
+for(i in(1:200)){
+  
+md.hivneg_agecat15 <- mn.hivneg_agecat15.rel*i
+md.hivneg_agecat1634 <- mn.hivneg_agecat1634.rel*i
+md.hivneg_agecat3554 <- mn.hivneg_agecat3554.rel*i
+md.hivneg_agecat55 <- mn.hivneg_agecat55.rel*i
+md.hivpos_agecat15 <- mn.hivpos_agecat15.rel*i
+md.hivpos_agecat1634 <- mn.hivpos_agecat1634.rel*i
+md.hivpos_agecat3554 <- mn.hivpos_agecat3554.rel*i
+md.hivpos_agecat55 <- ((i - ((md.hivneg_agecat15*prophiv_age[1]) + 
+                             (md.hivneg_agecat1634*prophiv_age[2]) + 
+                             (md.hivneg_agecat3554*prophiv_age[3]) +
+                             (md.hivneg_agecat55*prophiv_age[4]) +
+                             (md.hivpos_agecat15*prophiv_age[5]) +
+                             (md.hivpos_agecat1634*prophiv_age[6]) +
+                             (md.hivpos_agecat3554*prophiv_age[7]))) / 
+                             (1 - sum(prophiv_age[1:7])))
+
+assign(paste0("edges.hiv_age0.md", i), md.hivneg_agecat15 * sum(hiv_age == 0))
+assign(paste0("edges.hiv_age1.md", i), md.hivneg_agecat1634 * sum(hiv_age == 1))
+assign(paste0("edges.hiv_age2.md", i), md.hivneg_agecat3554 * sum(hiv_age == 2))
+assign(paste0("edges.hiv_age3.md", i), md.hivneg_agecat55 * sum(hiv_age == 3))
+assign(paste0("edges.hiv_age4.md", i), md.hivpos_agecat15 * sum(hiv_age == 4))
+assign(paste0("edges.hiv_age5.md", i), md.hivpos_agecat1634 * sum(hiv_age == 5))
+assign(paste0("edges.hiv_age6.md", i), md.hivpos_agecat3554 * sum(hiv_age == 6))
+assign(paste0("edges.hiv_age7.md", i), md.hivpos_agecat55 * sum(hiv_age == 7))
+  
+hivage_nfstats <- numeric(8)
+hivage_nfstats[1] <- md.hivneg_agecat15 * sum(hiv_age== 0)
+hivage_nfstats[2] <- md.hivneg_agecat1634 * sum(hiv_age== 1)
+hivage_nfstats[3] <- md.hivneg_agecat3554 * sum(hiv_age== 2)
+hivage_nfstats[4] <- md.hivneg_agecat55 * sum(hiv_age== 3)
+hivage_nfstats[5] <- md.hivpos_agecat15 * sum(hiv_age== 4)
+hivage_nfstats[6] <- md.hivpos_agecat1634 * sum(hiv_age== 5)
+hivage_nfstats[7] <- md.hivpos_agecat3554 * sum(hiv_age== 6)
+hivage_nfstats[8] <- md.hivpos_agecat55 * sum(hiv_age == 7)
+  
+hivage_nfstats_all[[i]] <- hivage_nfstats
+}
+
+##smear status and age
+mn.smneg_agecat15.rel <- mn.smneg_agecat15/md.trax.le5
+mn.smneg_agecat1634.rel <- mn.smneg_agecat1634/md.trax.le5
+mn.smneg_agecat3554.rel <- mn.smneg_agecat3554/md.trax.le5
+mn.smneg_agecat55.rel <- mn.smneg_agecat55/md.trax.le5
+mn.smpos_agecat15.rel <- mn.smpos_agecat15/md.trax.le5
+mn.smpos_agecat1634.rel <- mn.smpos_agecat1634/md.trax.le5
+mn.smpos_agecat3554.rel <- mn.smpos_agecat3554/md.trax.le5
+mn.smpos_agecat55.rel <- mn.smpos_agecat55/md.trax.le5
+
+smage_nfstats_all <- list()
+
+for(i in(1:200)){
+  
+md.smneg_agecat15 <- mn.smneg_agecat15.rel*i
+md.smneg_agecat1634 <- mn.smneg_agecat1634.rel*i
+md.smneg_agecat3554 <- mn.smneg_agecat3554.rel*i
+md.smneg_agecat55 <- mn.smneg_agecat55.rel*i
+md.smpos_agecat15 <- mn.smpos_agecat15.rel*i
+md.smpos_agecat1634 <- mn.smpos_agecat1634.rel*i
+md.smpos_agecat3554 <- mn.smpos_agecat3554.rel*i
+md.smpos_agecat55 <- ((i - ((md.smneg_agecat15*propsmstat_age[1]) + 
+                             (md.smneg_agecat1634*propsmstat_age[2]) + 
+                             (md.smneg_agecat3554*propsmstat_age[3]) +
+                             (md.smneg_agecat55*propsmstat_age[4]) +
+                             (md.smpos_agecat15*propsmstat_age[5]) +
+                             (md.smpos_agecat1634*propsmstat_age[6]) +
+                             (md.smpos_agecat3554*propsmstat_age[7]))) / 
+                             (1 - sum(propsmstat_age[1:7])))
+
+assign(paste0("edges.sm_age0.md", i), md.smneg_agecat15 * sum(smstat_age== 0))
+assign(paste0("edges.sm_age1.md", i), md.smneg_agecat1634 * sum(smstat_age== 1))
+assign(paste0("edges.sm_age2.md", i), md.smneg_agecat3554 * sum(smstat_age== 2))
+assign(paste0("edges.sm_age3.md", i), md.smneg_agecat55 * sum(smstat_age== 3))
+assign(paste0("edges.sm_age4.md", i), md.smpos_agecat15 * sum(smstat_age== 4))
+assign(paste0("edges.sm_age5.md", i), md.smpos_agecat1634 * sum(smstat_age== 5))
+assign(paste0("edges.sm_age6.md", i), md.smpos_agecat3554 * sum(smstat_age== 6))
+assign(paste0("edges.sm_age7.md", i), md.smpos_agecat55 * sum(smstat_age == 7))
+
+smage_nfstats <- numeric(8)
+smage_nfstats[1] <- md.smneg_agecat15 * sum(smstat_age== 0)
+smage_nfstats[2] <- md.smneg_agecat1634 * sum(smstat_age== 1)
+smage_nfstats[3] <- md.smneg_agecat3554 * sum(smstat_age== 2)
+smage_nfstats[4] <- md.smneg_agecat55 * sum(smstat_age== 3)
+smage_nfstats[5] <- md.smpos_agecat15 * sum(smstat_age== 4)
+smage_nfstats[6] <- md.smpos_agecat1634 * sum(smstat_age== 5)
+smage_nfstats[7] <- md.smpos_agecat3554 * sum(smstat_age== 6)
+smage_nfstats[8] <- md.smpos_agecat55 * sum(smstat_age == 7)
+  
+smage_nfstats_all[[i]] <- smage_nfstats
+}
+
+##cough
+mn.cough0.rel <- mn.cough0/md.trax.le5
+mn.cough1.rel <- mn.cough1/md.trax.le5
+mn.cough2.rel <- mn.cough2/md.trax.le5
+mn.cough3.rel <- mn.cough3/md.trax.le5
+mn.cough4.rel <- mn.cough4/md.trax.le5
+mn.cough5.rel <- mn.cough5/md.trax.le5
+
+cough_nfstats_all <- list()
+
+for(i in(1:200)){
+  
+md.cough0 <- mn.cough0.rel*i
+md.cough1 <- mn.cough1.rel*i
+md.cough2 <- mn.cough2.rel*i
+md.cough3 <- mn.cough3.rel*i
+md.cough4 <- mn.cough4.rel*i
+md.cough5 <- ((i - ((md.cough0*propcough[1]) + 
+                             (md.cough1*propcough[2]) + 
+                             (md.cough2*propcough[3]) +
+                             (md.cough3*propcough[4]) +
+                             (md.cough4*propcough[5]))) / 
+                             (1-sum(propcough[1:5])))
+
+assign(paste0("edges.cough0.md", i), md.cough0 * sum(cough== 0))
+assign(paste0("edges.cough1.md", i), md.cough1 * sum(cough== 1))
+assign(paste0("edges.cough2.md", i), md.cough2 * sum(cough== 2))
+assign(paste0("edges.cough3.md", i), md.cough3 * sum(cough== 3))
+assign(paste0("edges.cough4.md", i), md.cough4 * sum(cough== 4))
+assign(paste0("edges.cough5.md", i), md.cough5 * sum(cough== 5))
+
+cough_nfstats <- numeric(6)
+cough_nfstats[1] <- md.cough0 * sum(cough== 0)
+cough_nfstats[2] <- md.cough1 * sum(cough== 1)
+cough_nfstats[3] <- md.cough2 * sum(cough== 2)
+cough_nfstats[4]<- md.cough3 * sum(cough== 3)
+cough_nfstats[5]<- md.cough4 * sum(cough== 4)
+cough_nfstats[6] <- md.cough5 * sum(cough== 5)
+
+cough_nfstats_all[[i]] <- cough_nfstats
+
+}
+
+
+
+#Now, combine all vars into a dataframe
+#columns are cough categories (0-5), rows are mean degrees. 
+#e.g. for md2 models, want cough_nfstats_mat[x,1] where x is cough category
+edges_nfstats <- mds
+hp_nfstats_mat <- matrix(unlist(hp_nfstats_all), nrow=200, ncol=2, byrow=TRUE)
+yr_nfstats_mat <- matrix(unlist(yr_nfstats_all), nrow=200, ncol=4, byrow=TRUE)
+cough_nfstats_mat <- matrix(unlist(cough_nfstats_all), nrow=200, ncol=6, byrow=TRUE)
+smage_nfstats_mat <- matrix(unlist(smage_nfstats_all), nrow=200, ncol=8, byrow=TRUE)
+hivage_nfstats_mat <- matrix(unlist(hivage_nfstats_all), nrow=200, ncol=8, byrow=TRUE)
+  
+
+
+# Generate networks using distributions of characteristics
+
+
+
+
+  ## Initialize the network
+nw_sim_un <- network.initialize(n = n_sim, directed = FALSE)
+  ## Assign attributes to network nodes (cases)
+nw_sim_un <- set.vertex.attribute(nw_sim_un, attrname = "hp", value = hp)
+nw_sim_un <- set.vertex.attribute(nw_sim_un, attrname = "yr", value = y_enroll)
+nw_sim_un <- set.vertex.attribute(nw_sim_un, attrname = "cough", value = cough)
+nw_sim_un <- set.vertex.attribute(nw_sim_un, attrname = "hiv_age", value = hiv_age)
+nw_sim_un <- set.vertex.attribute(nw_sim_un, attrname = "smstat_age", value = smstat_age)
+
+```
+
+From each network model, we simulated 1000 networks. 
+
+We sampled 350 cases from each simulated, full network, mimicking sampling 350 cases in our TRAX study from the larger population of XDR TB cases. We compared the degree distributions of modeled, sampled networks to that of the empirical TRAX network. 
+
+
+```{r, set ransamp and nsamples}
+
+# This generates a sample of 350 cases from a network of a given size (encoded in nw_sim_un)
+ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+# We're going to sample 1000 networks from every model that we test
+nsamples <- 1000
+```
+
+We specified the following parameters of the Markov Chain Monte Carlo (MCMC) algorithm: we set the number of burn-in simulations as 100000, the MCMC interval as 5000, and the MCMC sample size as 10000.
+
+We ensured that the MCMC algorithm used to estimate parameters for each model converged appropriately by checking for adequate mixing of the MCMC chain and sufficient exploration of parameter space using the mcmc.diagnostics function in the ergm package.
+
+SCENARIOS:
+
+1. We assumed that cases missing at random would result in missing transmission links randomly across the network. We simulated full networks with mean degrees of 2, 5, 8, 10, 15, 20, 50, 100, and 200. Results from models of networks with mean degree of 2 through 20 are presented in the main manuscript and models with mean degree greater than 20 are presented in the supplemental results.
+
+2. We assumed two opposing scenarios: that cases who were highly connected in the full network were more likely to be sampled, and that cases that were poorly connected in the full network were more likely to be sampled. To simulate the former scenario, we created and used sampling weights proportional to each cases’ degree in the full network; to simulate the latter scenario, we created and used sampling weights inversely proportional to degree in the full network.
+
+We sampled cases using this method in full networks with various mean degrees (2, 5, 8, 10, 15, 20).
+
+3. We assumed that smear-positive cases were more likely to be sampled. To do this, we modified the distribution of smear status in the full network relative to the empirical TRAX network. In the TRAX study, 68% of XDR TB cases were smear-positive. To estimate the effect of oversampling smear-positive cases, we assumed that the proportion of smear-positive was smaller in the full network than we observed in TRAX. 
+
+We modeled full networks in line with this scenario at various mean degrees (2, 5, 8, 10, 15, 20) and sampled 350 cases from each modeled network.
+
+4. We hypothesized that a factor contributing strongly to transmission risk but that was not accounted for in our model (a ‘superspreading’ factor) might have a substantial impact on full and sampled network structure.7,8 In a recent study examining superspreading behavior among TB cases, the mean number of secondary infections per index case was 0.77, and the 90th percentile of the distribution of secondary infections was 10 infections per index.4 Consistent with these findings, we hypothesized that a ‘superspreading’ factor present in a minority of the population might increase transmission by at least 10 times (10x), that is, cases with this factor would be responsible for 10 times as many transmission events as those lacking this factor. 
+
+We created a ‘nodefactor’ term in the model for this unmeasured, superspreading factor. We tested superspreading factors ranging from 10x to 40x. To define the strength of a factor, we increased the degree in the network of cases with this factor relative to cases without the latent factor. The number of links in the overall network remained the same, but adding a latent factor caused them to be distributed differently (more among ‘superspreaders’, fewer among non-superspreaders.) We varied the strength of the superspreading factor up to 40x to explore the effects on the distribution at higher values for latent factor strength.
+
+In addition, we varied the prevalence (0.10-0.30) of this latent factor. In the same study referenced above, approximately 10% of TB cases were associated with superspreading events. Thus, we varied prevalence starting at 10% to account for the possibility of high-transmitting cases may be undersampled, consistent with our findings from this analysis.
+
+
+```{r, ergms for different mean degrees}
+
+nw_md <- list()
+
+for(i in(c(2, 5, 8, 10, 15, 20, 50, 100, 200))){
+  
+nw <- ergm(nw_sim_un ~ edges + nodefactor("hp", base = 1) + nodefactor("yr", base = 1) + nodefactor("cough", base = 5:6) + nodefactor("smstat_age", base = c(1, 4:5, 8)) + nodefactor("hiv_age", base = c(1:5, 8)), control = control.ergm(MCMC.burnin = 100000, MCMC.samplesize=10000, MCMLE.maxit = 100, MCMC.interval = 5000, MCMLE.density.guard = exp(10)),
+                                    target.stats = c(edges_nfstats[i,2], 
+                                          hp_nfstats_mat[i,1], 
+                                          yr_nfstats_mat[i,2], yr_nfstats_mat[i,3], yr_nfstats_mat[i,4],
+                                          cough_nfstats_mat[i,1], cough_nfstats_mat[i,2], cough_nfstats_mat[i,3], cough_nfstats_mat[i,4], 
+                                          smage_nfstats_mat[i,2], smage_nfstats_mat[i,3], smage_nfstats_mat[i,6], smage_nfstats_mat[i,7],
+                                          hivage_nfstats_mat[i,6], hivage_nfstats_mat[i,7]))
+
+nw_md[[i]] <- nw
+
+saveRDS(nw, file = paste("nw", n_sim, "md", i, ".RDS", sep = "_"))
+
+}
+
+# To reload these network objects
+
+nw_md <- list()
+
+nw_md[[2]] <- readRDS(here("missing-networks/Output/nw_2000_md_2_.RDS"))
+nw_md[[5]] <- readRDS(here("missing-networks/Output/nw_2000_md_5_.RDS"))
+nw_md[[8]] <- readRDS(here("missing-networks/Output/nw_2000_md_8_.RDS"))
+nw_md[[10]] <- readRDS(here("missing-networks/Output/nw_2000_md_10_.RDS"))
+nw_md[[15]] <- readRDS(here("missing-networks/Output/nw_2000_md_15_.RDS"))
+nw_md[[20]] <- readRDS(here("missing-networks/Output/nw_2000_md_20_.RDS"))
+nw_md[[50]] <- readRDS(here("missing-networks/Output/nw_2000_md_50_.RDS"))
+nw_md[[100]] <- readRDS(here("missing-networks/Output/nw_2000_md_100_.RDS"))
+nw_md[[200]] <- readRDS(here("missing-networks/Output/nw_2000_md_200_.RDS"))
+
+
+#---------------------------------#
+# Scenario 1: RANDOM SAMPLING
+#---------------------------------#
+
+for(k in(c(2, 5, 8, 10, 15, 20, 50, 100, 200))){
+  
+        degdist <- list()
+      
+        med <- list()
+        
+for(i in 1:nsamples){
+    
+      nw_sim <- simulate(nw_md[[k]], nsim = 1, monitor = ~ degree(0:100) + meandeg) # simulate a network from a model with mean degree k
+    
+      sim_deg <- degree(get.inducedSubgraph(nw_sim, ransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE) # sample the network
+      
+      simdegdist <- table(sim_deg) 
+      
+      degdist[[i]] <- as.data.frame(simdegdist)
+      
+      quantiles <- quantile(sim_deg, c(0.1, 0.25, 0.50, 0.75, 1)) # extract degrees at quantiles of the degree distribution
+      
+      med[[i]] <- as.vector(quantiles)
+      
+      rm(nw_sim) # delete the network object
+      
+    } 
+      saveRDS(degdist, file = paste("nw", n_sim, "sim", nsamples, "md", k, "degdist.RDS", sep = "_"))
+      saveRDS(med, file = paste("nw", n_sim, "sim", nsamples, "md", k, "med.RDS", sep = "_"))
+}
+
+
+#---------------------------------#
+# Scenario 2: OVERSAMPLING HIGH-TRANSMITTERS (sampling probability weight is ~ to degree)
+#---------------------------------#
+
+for(k in(c(2, 5, 8, 10, 15, 20, 50, 100, 200))){
+  
+        degdist <- list()
+      
+        med <- list()
+        
+for(i in 1:nsamples){
+    
+      nw_sim <- simulate(nw_md[[k]], nsim = 1, monitor = ~ degree(0:100) + meandeg) # simulate a network from a model with mean degree k
+      
+      degtosamp <- degree(nw_sim, gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+      
+      degtable <- as.data.frame(cbind(degtosamp, 1:n_sim))
+      
+      nonransamp <- sample_n(degtable, 350, replace = FALSE, weight = degtosamp + 0.1) # select sample nodes with sampling weight of degree
+      
+      nonransamp <- nonransamp[,2]
+    
+      sim_deg <- degree(get.inducedSubgraph(nw_sim, nonransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE) # sample from modeled network
+      
+      simdegdist <- table(sim_deg) 
+      
+      degdist[[i]] <- as.data.frame(simdegdist)
+      
+      quantiles <- quantile(sim_deg, c(0.1, 0.25, 0.50, 0.75, 1)) # extract degrees at quantiles of the degree distribution
+      
+      med[[i]] <- as.vector(quantiles)
+      
+      rm(nw_sim) # delete simulated nw
+      
+    } 
+      saveRDS(degdist, file = paste("nw", n_sim, "sim", nsamples, "nonran_deg_md", k, "degdist.RDS", sep = "_"))
+      saveRDS(med, file = paste("nw", n_sim, "sim", nsamples, "nonran_deg_md", k, "med.RDS", sep = "_"))
+}
+
+
+#---------------------------------#
+# Scenario 2: OVERSAMPLING LOW-TRANSMITTERS (sampling probability weight is ~ to INVERSE degree)
+#---------------------------------#
+
+for(k in(c(2, 5, 8, 10, 15, 20, 50, 100, 200))){
+  
+        degdist <- list()
+      
+        med <- list()
+        
+for(i in 1:nsamples){
+    
+      nw_sim <- simulate(nw_md[[k]], nsim = 1, monitor = ~ degree(0:100) + meandeg) # simulate a network from a model with mean degree k
+      
+      degtosamp <- degree(nw_sim, gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+      
+      degtable <- as.data.frame(cbind(degtosamp, 1:n_sim))
+      
+      nonransamp <- sample_n(degtable, 350, replace = FALSE, weight = (1 / (degtosamp + 0.1))) # select sample nodes with sampling weight of INVERSE degree
+      
+      nonransamp <- nonransamp[,2]
+    
+      sim_deg <- degree(get.inducedSubgraph(nw_sim, nonransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE) # sample from modeled network
+      
+      simdegdist <- table(sim_deg) 
+      
+      degdist[[i]] <- as.data.frame(simdegdist)
+      
+      quantiles <- quantile(sim_deg, c(0.1, 0.25, 0.50, 0.75, 1)) # extract degrees at quantiles of the degree distribution
+      
+      med[[i]] <- as.vector(quantiles)
+
+      rm(nw_sim) # delete simulated nw
+      
+    } 
+      saveRDS(degdist, file = paste("nw", n_sim, "sim", nsamples, "nonran_md", k, "degdist.RDS", sep = "_"))
+      saveRDS(med, file = paste("nw", n_sim, "sim", nsamples, "nonran_md", k, "med.RDS", sep = "_"))
+}
+
+# FILE NAMING NOTE:
+#  - "nonran_deg" in filename denotes that sampling was done with degree as weight (reflecting assumption than high degree nodes are more likely to be sampled)
+#  - "is "nonran" only in filename, sampling was done with INVERSE degree as weight (reflecting assumption that low degree nodes are more likely to be sampled)
+```
+
+For Scenario 3, we assume that smear-positive cases are oversampled, that is, there are a higher proportion of smear-positive cases in the sampled (empirical) network than in the complete network.
+
+In the TRAX network, 70% of cases were smear positive. In the following modeled networks, we assume that the full network had either 30% or 50% smear-postive cases.
+```{r, target stats for changing attribute distn}
+
+#different full pop (network) composition 2 (i.e., more smear-negs) 
+nw_sim_un_c1 <- network.initialize(n = n_sim, directed = FALSE)
+nw_sim_un_c2 <- network.initialize(n = n_sim, directed = FALSE)
+
+# Joint distribution of smear status and age gives 8 categories (4*2): sm0_age1, sm0_age2, sm0_age3, sm0_age4, sm1_age1, sm1_age2, sm1_age3, sm1_age4
+
+# 50/50 smear-/+
+sm_age_c1 <- sample(0:7, n_sim, prob=c((0.5*0.03), (0.5*0.5), (0.5*0.39), (0.5*0.08), (0.5*0.03), (0.5*0.5), (0.5*0.39), (0.5*0.08)), replace=TRUE) 
+# 70/30 smear-/+
+sm_age_c2 <- sample(0:7, n_sim, prob=c((0.7*0.03), (0.7*0.5), (0.7*0.39), (0.7*0.08), (0.3*0.03), (0.3*0.5), (0.3*0.39), (0.3*0.08)), replace=TRUE)
+
+
+# Need to generate new networks with these new attribute distributions
+
+nw_sim_un_c1 <- set.vertex.attribute(nw_sim_un_c1, attrname = "hp", value = hp)
+nw_sim_un_c1 <- set.vertex.attribute(nw_sim_un_c1, attrname = "yr", value = y_enroll)
+nw_sim_un_c1 <- set.vertex.attribute(nw_sim_un_c1, attrname = "cough", value = cough)
+nw_sim_un_c1 <- set.vertex.attribute(nw_sim_un_c1, attrname = "hiv_age", value = hiv_age)
+nw_sim_un_c1 <- set.vertex.attribute(nw_sim_un_c1, attrname = "smstat_age_c1", value = sm_age_c1)
+
+nw_sim_un_c2 <- set.vertex.attribute(nw_sim_un_c2, attrname = "hp", value = hp)
+nw_sim_un_c2 <- set.vertex.attribute(nw_sim_un_c2, attrname = "yr", value = y_enroll)
+nw_sim_un_c2 <- set.vertex.attribute(nw_sim_un_c2, attrname = "cough", value = cough)
+nw_sim_un_c2 <- set.vertex.attribute(nw_sim_un_c2, attrname = "hiv_age", value = hiv_age)
+nw_sim_un_c2 <- set.vertex.attribute(nw_sim_un_c2, attrname = "smstat_age_c2", value = sm_age_c2)
+
+
+##sm_age_c1/c2/c3/c4
+
+smage_nfstats_all_c1 <- list()
+
+for(i in(1:20)){
+  
+md.smneg_agecat15 <- mn.smneg_agecat15.rel*i
+md.smneg_agecat1634 <- mn.smneg_agecat1634.rel*i
+md.smneg_agecat3554 <- mn.smneg_agecat3554.rel*i
+md.smneg_agecat55 <- mn.smneg_agecat55.rel*i
+md.smpos_agecat15 <- mn.smpos_agecat15.rel*i
+md.smpos_agecat1634 <- mn.smpos_agecat1634.rel*i
+md.smpos_agecat3554 <- mn.smpos_agecat3554.rel*i
+md.smpos_agecat55 <- ((i - ((md.smneg_agecat15*sm_age_c1[1]) + 
+                             (md.smneg_agecat1634*sm_age_c1[2]) + 
+                             (md.smneg_agecat3554*sm_age_c1[3]) +
+                             (md.smneg_agecat55*sm_age_c1[4]) +
+                             (md.smpos_agecat15*sm_age_c1[5]) +
+                             (md.smpos_agecat1634*sm_age_c1[6]) +
+                             (md.smpos_agecat3554*sm_age_c1[7]))) / 
+                             (1 - sum(sm_age_c1[1:7])))
+
+assign(paste0("edges.sm_age0_c1.md", i), md.smneg_agecat15 * sum(sm_age_c1 == 0))
+assign(paste0("edges.sm_age1_c1.md", i), md.smneg_agecat1634 * sum(sm_age_c1 == 1))
+assign(paste0("edges.sm_age2_c1.md", i), md.smneg_agecat3554 * sum(sm_age_c1 == 2))
+assign(paste0("edges.sm_age3_c1.md", i), md.smneg_agecat55 * sum(sm_age_c1 == 3))
+assign(paste0("edges.sm_age4_c1.md", i), md.smpos_agecat15 * sum(sm_age_c1 == 4))
+assign(paste0("edges.sm_age5_c1.md", i), md.smpos_agecat1634 * sum(sm_age_c1 == 5))
+assign(paste0("edges.sm_age6_c1.md", i), md.smpos_agecat3554 * sum(sm_age_c1 == 6))
+assign(paste0("edges.sm_age7_c1.md", i), md.smpos_agecat55 * sum(sm_age_c1 == 7))
+  
+smage_nfstats <- numeric(8)
+smage_nfstats[1] <- md.smneg_agecat15 * sum(sm_age_c1== 0)
+smage_nfstats[2] <- md.smneg_agecat1634 * sum(sm_age_c1== 1)
+smage_nfstats[3] <- md.smneg_agecat3554 * sum(sm_age_c1== 2)
+smage_nfstats[4] <- md.smneg_agecat55 * sum(sm_age_c1== 3)
+smage_nfstats[5] <- md.smpos_agecat15 * sum(sm_age_c1== 4)
+smage_nfstats[6] <- md.smpos_agecat1634 * sum(sm_age_c1== 5)
+smage_nfstats[7] <- md.smpos_agecat3554 * sum(sm_age_c1== 6)
+smage_nfstats[8] <- md.smpos_agecat55 * sum(sm_age_c1 == 7)
+  
+smage_nfstats_all_c1[[i]] <- smage_nfstats
+}
+
+smage_nfstats_all_c2 <- list()
+
+for(i in(1:20)){
+  
+md.smneg_agecat15 <- mn.smneg_agecat15.rel*i
+md.smneg_agecat1634 <- mn.smneg_agecat1634.rel*i
+md.smneg_agecat3554 <- mn.smneg_agecat3554.rel*i
+md.smneg_agecat55 <- mn.smneg_agecat55.rel*i
+md.smpos_agecat15 <- mn.smpos_agecat15.rel*i
+md.smpos_agecat1634 <- mn.smpos_agecat1634.rel*i
+md.smpos_agecat3554 <- mn.smpos_agecat3554.rel*i
+md.smpos_agecat55 <- ((i - ((md.smneg_agecat15*sm_age_c2[1]) + 
+                             (md.smneg_agecat1634*sm_age_c2[2]) + 
+                             (md.smneg_agecat3554*sm_age_c2[3]) +
+                             (md.smneg_agecat55*sm_age_c2[4]) +
+                             (md.smpos_agecat15*sm_age_c2[5]) +
+                             (md.smpos_agecat1634*sm_age_c2[6]) +
+                             (md.smpos_agecat3554*sm_age_c2[7]))) / 
+                             (1 - sum(sm_age_c2[1:7])))
+
+assign(paste0("edges.sm_age0_c2.md", i), md.smneg_agecat15 * sum(sm_age_c2 == 0))
+assign(paste0("edges.sm_age1_c2.md", i), md.smneg_agecat1634 * sum(sm_age_c2 == 1))
+assign(paste0("edges.sm_age2_c2.md", i), md.smneg_agecat3554 * sum(sm_age_c2 == 2))
+assign(paste0("edges.sm_age3_c2.md", i), md.smneg_agecat55 * sum(sm_age_c2 == 3))
+assign(paste0("edges.sm_age4_c2.md", i), md.smpos_agecat15 * sum(sm_age_c2 == 4))
+assign(paste0("edges.sm_age5_c2.md", i), md.smpos_agecat1634 * sum(sm_age_c2 == 5))
+assign(paste0("edges.sm_age6_c2.md", i), md.smpos_agecat3554 * sum(sm_age_c2 == 6))
+assign(paste0("edges.sm_age7_c2.md", i), md.smpos_agecat55 * sum(sm_age_c2 == 7))
+  
+smage_nfstats <- numeric(8)
+smage_nfstats[1] <- md.smneg_agecat15 * sum(sm_age_c2== 0)
+smage_nfstats[2] <- md.smneg_agecat1634 * sum(sm_age_c2== 1)
+smage_nfstats[3] <- md.smneg_agecat3554 * sum(sm_age_c2== 2)
+smage_nfstats[4] <- md.smneg_agecat55 * sum(sm_age_c2== 3)
+smage_nfstats[5] <- md.smpos_agecat15 * sum(sm_age_c2== 4)
+smage_nfstats[6] <- md.smpos_agecat1634 * sum(sm_age_c2== 5)
+smage_nfstats[7] <- md.smpos_agecat3554 * sum(sm_age_c2== 6)
+smage_nfstats[8] <- md.smpos_agecat55 * sum(sm_age_c2 == 7)
+  
+smage_nfstats_all_c2[[i]] <- smage_nfstats
+}
+
+#combine all vars into a dataframe
+#columns are attribute categories (0-8), rows are mean degrees. 
+#e.g. for md2 models, want smage_nfstats_all_c1[x,1] where x is smear/age category
+smage_nfstats_c1_mat <- matrix(unlist(smage_nfstats_all_c1), nrow=20, ncol=8, byrow=TRUE)
+smage_nfstats_c2_mat <- matrix(unlist(smage_nfstats_all_c2), nrow=20, ncol=8, byrow=TRUE)
+
+```
+
+
+
+```{r, ergms for changed attribute distributions}
+
+# These are the new ERGMs for networks with changed smear status distributions
+
+nw_c1 <- list()
+
+for(i in c(2, 5, 8, 10, 15, 20)){
+
+  
+nw <- ergm(nw_sim_un_c1 ~ edges + nodefactor("hp", base = 1) + nodefactor("yr", base = 1) + nodefactor("cough", base = 5:6) + nodefactor("smstat_age_c1", base = c(1, 4:5, 8)) + nodefactor("hiv_age", base = c(1:5, 8)), control = control.ergm(MCMC.burnin = 100000, MCMC.samplesize=10000, MCMLE.maxit = 100, MCMC.interval = 5000, MCMLE.density.guard = exp(10)),
+                                    target.stats = c(edges_nfstats[i,2], 
+                                          hp_nfstats_mat[i,1], 
+                                          yr_nfstats_mat[i,2], yr_nfstats_mat[i,3], yr_nfstats_mat[i,4],
+                                          cough_nfstats_mat[i,1], cough_nfstats_mat[i,2], cough_nfstats_mat[i,3], cough_nfstats_mat[i,4], 
+                                          smage_nfstats_c1_mat[i,2], smage_nfstats_c1_mat[i,3], smage_nfstats_c1_mat[i,6], smage_nfstats_c1_mat[i,7],
+                                          hivage_nfstats_mat[i,6], hivage_nfstats_mat[i,7]))
+
+nw_c1[[i]]<- nw
+
+saveRDS(nw_c1, file = paste("nw", n_sim, "md", i, "c1.RDS", sep = "_"))
+
+}
+
+nw_c2 <- list()
+
+for(i in c(2, 5, 10, 15, 20)){
+
+  
+nw <- ergm(nw_sim_un_c2 ~ edges + nodefactor("hp", base = 1) + nodefactor("yr", base = 1) + nodefactor("cough", base = 5:6) + nodefactor("smstat_age_c2", base = c(1, 4:5, 8)) + nodefactor("hiv_age", base = c(1:5, 8)), control = control.ergm(MCMC.burnin = 100000, MCMC.samplesize=10000, MCMLE.maxit = 100, MCMC.interval = 5000, MCMLE.density.guard = exp(10)),
+                                    target.stats = c(edges_nfstats[i,2], 
+                                          hp_nfstats_mat[i,1], 
+                                          yr_nfstats_mat[i,2], yr_nfstats_mat[i,3], yr_nfstats_mat[i,4],
+                                          cough_nfstats_mat[i,1], cough_nfstats_mat[i,2], cough_nfstats_mat[i,3], cough_nfstats_mat[i,4], 
+                                          smage_nfstats_c2_mat[i,2], smage_nfstats_c2_mat[i,3], smage_nfstats_c2_mat[i,6], smage_nfstats_c2_mat[i,7],
+                                          hivage_nfstats_mat[i,6], hivage_nfstats_mat[i,7]))
+
+nw_c2[[i]]<- nw
+
+saveRDS(nw_c2, file = paste("nw", n_sim, "md", i, "c2.RDS", sep = "_"))
+
+}
+
+```
+
+
+```{r, sample from networks with changed attribute distributions}
+
+nw_c1 <- list()
+nw_c1[[2]] <- readRDS(here("nw_2000_md_2_c1.RDS"))
+nw_c1[[5]] <- readRDS(here("nw_2000_md_5_c1.RDS"))
+nw_c1[[8]] <- readRDS(here("nw_2000_md_8_c1.RDS"))
+nw_c1[[10]] <- readRDS(here("nw_2000_md_10_c1.RDS"))
+nw_c1[[15]] <- readRDS(here("nw_2000_md_15_c1.RDS"))
+nw_c1[[20]] <- readRDS(here("nw_2000_md_20_c1.RDS"))
+
+nw_c2 <- list()
+nw_c2[[2]] <- readRDS(here("nw_2000_md_2_c2.RDS"))
+nw_c2[[5]] <- readRDS(here("nw_2000_md_5_c2.RDS"))
+nw_c2[[8]] <- readRDS(here("nw_2000_md_8_c2.RDS"))
+nw_c2[[10]] <- readRDS(here("nw_2000_md_10_c2.RDS"))
+nw_c2[[15]] <- readRDS(here("nw_2000_md_15_c2.RDS"))
+nw_c2[[20]] <- readRDS(here("nw_2000_md_20_c2.RDS"))
+
+
+for(k in(c(2, 5, 8, 10, 15, 20))){
+  
+        degdist <- list()
+      
+        med <- list()
+        
+for(i in 1:nsamples){
+    
+      nw_sim <- simulate(nw_c1[[k]], nsim = 1, monitor = ~ degree(0:100) + meandeg) # simulate a network from a model with mean degree k
+    
+      sim_deg <- degree(get.inducedSubgraph(nw_sim, ransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE) # sample the network
+      
+      simdegdist <- table(sim_deg) 
+      
+      degdist[[i]] <- as.data.frame(simdegdist)
+      
+      quantiles <- quantile(sim_deg, c(0.1, 0.25, 0.50, 0.75, 1)) # extract degrees at quantiles of the degree distribution
+      
+      med[[i]] <- as.vector(quantiles)
+      
+      rm(nw_sim) # delete the network object
+
+      } 
+  
+      saveRDS(degdist, file = paste("nw", n_sim, "sim", nsamples, "md", k, "c1_degdist.RDS", sep = "_"))
+      saveRDS(med, file = paste("nw", n_sim, "sim", nsamples, "md", k, "c1_med.RDS", sep = "_"))
+}
+
+
+for(k in(c(2, 5, 8, 10, 15, 20))){
+  
+        degdist <- list()
+      
+        med <- list()
+        
+for(i in 1:nsamples){
+    
+      nw_sim <- simulate(nw_c2[[k]], nsim = 1, monitor = ~ degree(0:100) + meandeg) # simulate a network from a model with mean degree k
+    
+      sim_deg <- degree(get.inducedSubgraph(nw_sim, ransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE) # sample the network
+      
+      simdegdist <- table(sim_deg) 
+      
+      degdist[[i]] <- as.data.frame(simdegdist)
+      
+      quantiles <- quantile(sim_deg, c(0.1, 0.25, 0.50, 0.75, 1)) # extract degrees at quantiles of the degree distribution
+      
+      med[[i]] <- as.vector(quantiles)
+      
+      rm(nw_sim) # delete the network object
+
+      } 
+  
+      saveRDS(degdist, file = paste("nw", n_sim, "sim", nsamples, "md", k, "c2_degdist.RDS", sep = "_"))
+      saveRDS(med, file = paste("nw", n_sim, "sim", nsamples, "md", k, "c2_med.RDS", sep = "_"))
+}
+
+```
+
+
+In Scenario 4, we added an unmeasured latent factor variable to represent superspreading.
+
+
+```{r, target stats for adding latent factor}
+
+#---------------------------------#
+# Scenario 4: LATENT FACTOR ('SUPERSPREADING')
+#---------------------------------#
+
+#create latent factor variables of varying strengths (x10-x40) and prevalences (0.10-0.40)
+
+
+lf_in10 <- rbinom(n_sim, 1, 0.10) 
+lf_in20 <- rbinom(n_sim, 1, 0.20) 
+lf_in30 <- rbinom(n_sim, 1, 0.30) 
+lf_in40 <- rbinom(n_sim, 1, 0.40) 
+
+nw_sim_un <- set.vertex.attribute(nw_sim_un, "lf_10", lf_in10)
+nw_sim_un <- set.vertex.attribute(nw_sim_un, "lf_20", lf_in20)
+nw_sim_un <- set.vertex.attribute(nw_sim_un, "lf_30", lf_in30)
+nw_sim_un <- set.vertex.attribute(nw_sim_un, "lf_40", lf_in40)
+
+mn.lf_10 <- 10
+mn.nonlf_10 <- 1
+mn.lf_20 <- 20 
+mn.nonlf_20 <- 1
+mn.lf_40 <- 40 
+mn.nonlf_40 <- 1
+
+###Prevalence = 0.10
+#lf10
+lf_10_nfstats_in10_all <- list()
+
+for(i in(1:20)){
+  
+md.lf_10 <- mn.lf_10.rel*i
+md.nonlf_10 <- (i - (md.lf_10 * 0.10))/(1-0.10)
+
+assign((paste0("edges.lf_10.md", i)), (md.lf_10 * sum(lf_in10 == 1)))
+assign(paste0("edges.nonlf_10.md", i), md.nonlf_10 * sum(lf_in10 == 0))
+
+lf_10_nfstats <- numeric(2)
+lf_10_nfstats[1] <- md.lf_10 * sum(lf_in10 == 1)
+lf_10_nfstats[2] <- md.nonlf_10 * sum(lf_in10 == 0)
+
+lf_10_nfstats_in10_all[[i]] <- lf_10_nfstats
+}
+
+#lf20
+lf_20_nfstats_in10_all <- list()
+
+for(i in(1:20)){
+  
+md.lf_20 <- mn.lf_20.rel*i
+md.nonlf_20 <- (i - (md.lf_20 * 0.10))/(1-0.10)
+
+assign((paste0("edges.lf_20.md", i)), (md.lf_20 * sum(lf_in10 == 1)))
+assign(paste0("edges.nonlf_20.md", i), md.nonlf_20 * sum(lf_in10 == 0))
+
+lf_20_nfstats <- numeric(2)
+lf_20_nfstats[1] <- md.lf_20 * sum(lf_in10 == 1)
+lf_20_nfstats[2] <- md.nonlf_20 * sum(lf_in10 == 0)
+
+lf_20_nfstats_in10_all[[i]] <- lf_20_nfstats
+}
+
+#lf40
+lf_40_nfstats_in10_all <- list()
+
+for(i in(1:20)){
+  
+md.lf_40 <- mn.lf_40.rel*i
+md.nonlf_40 <- (i - (md.lf_40 * 0.10))/(1-0.10)
+
+assign((paste0("edges.lf_40.md", i)), (md.lf_40 * sum(lf_in10 == 1)))
+assign(paste0("edges.nonlf_40.md", i), md.nonlf_40 * sum(lf_in10 == 0))
+
+lf_40_nfstats <- numeric(2)
+lf_40_nfstats[1] <- md.lf_40 * sum(lf_in10 == 1)
+lf_40_nfstats[2] <- md.nonlf_40 * sum(lf_in10 == 0)
+
+lf_40_nfstats_in10_all[[i]] <- lf_40_nfstats
+}
+
+###Prevalence = 0.20
+#lf10
+lf_10_nfstats_in20_all <- list()
+
+for(i in(1:20)){
+  
+md.lf_10 <- mn.lf_10.rel*i
+md.nonlf_10 <- (i - (md.lf_10 * 0.20))/(1-0.20)
+
+assign((paste0("edges.lf_10.md", i)), (md.lf_10 * sum(lf_in20 == 1)))
+assign(paste0("edges.nonlf_10.md", i), md.nonlf_10 * sum(lf_in20 == 0))
+
+lf_10_nfstats <- numeric(2)
+lf_10_nfstats[1] <- md.lf_10 * sum(lf_in20 == 1)
+lf_10_nfstats[2] <- md.nonlf_10 * sum(lf_in20 == 0)
+
+lf_10_nfstats_in20_all[[i]] <- lf_10_nfstats
+}
+
+#lf20
+lf_20_nfstats_in20_all <- list()
+
+for(i in(1:20)){
+  
+md.lf_20 <- mn.lf_20.rel*i
+md.nonlf_20 <- (i - (md.lf_20 * 0.20))/(1-0.20)
+
+assign((paste0("edges.lf_20.md", i)), (md.lf_20 * sum(lf_in20 == 1)))
+assign(paste0("edges.nonlf_20.md", i), md.nonlf_20 * sum(lf_in20 == 0))
+
+lf_20_nfstats <- numeric(2)
+lf_20_nfstats[1] <- md.lf_20 * sum(lf_in20 == 1)
+lf_20_nfstats[2] <- md.nonlf_20 * sum(lf_in20 == 0)
+
+lf_20_nfstats_in20_all[[i]] <- lf_20_nfstats
+}
+
+#lf40
+lf_40_nfstats_in20_all <- list()
+
+for(i in(1:20)){
+  
+md.lf_40 <- mn.lf_40.rel*i
+md.nonlf_40 <- (i - (md.lf_40 * 0.20))/(1-0.20)
+
+assign((paste0("edges.lf_40.md", i)), (md.lf_40 * sum(lf_in20 == 1)))
+assign(paste0("edges.nonlf_40.md", i), md.nonlf_40 * sum(lf_in20 == 0))
+
+lf_40_nfstats <- numeric(2)
+lf_40_nfstats[1] <- md.lf_40 * sum(lf_in20 == 1)
+lf_40_nfstats[2] <- md.nonlf_40 * sum(lf_in20 == 0)
+
+lf_40_nfstats_in20_all[[i]] <- lf_40_nfstats
+}
+
+###Prevalence = 0.30
+#lf10
+lf_10_nfstats_in30_all <- list()
+
+for(i in(1:20)){
+  
+md.lf_10 <- mn.lf_10.rel*i
+md.nonlf_10 <- (i - (md.lf_10 * 0.30))/(1-0.30)
+
+assign((paste0("edges.lf_10.md", i)), (md.lf_10 * sum(lf_in30 == 1)))
+assign(paste0("edges.nonlf_10.md", i), md.nonlf_10 * sum(lf_in30 == 0))
+
+lf_10_nfstats <- numeric(2)
+lf_10_nfstats[1] <- md.lf_10 * sum(lf_in30 == 1)
+lf_10_nfstats[2] <- md.nonlf_10 * sum(lf_in30 == 0)
+
+lf_10_nfstats_in30_all[[i]] <- lf_10_nfstats
+}
+
+#lf20
+lf_20_nfstats_in30_all <- list()
+
+for(i in(1:20)){
+  
+md.lf_20 <- mn.lf_20.rel*i
+md.nonlf_20 <- (i - (md.lf_20 * 0.30))/(1-0.30)
+
+assign((paste0("edges.lf_20.md", i)), (md.lf_20 * sum(lf_in30 == 1)))
+assign(paste0("edges.nonlf_20.md", i), md.nonlf_20 * sum(lf_in30 == 0))
+
+lf_20_nfstats <- numeric(2)
+lf_20_nfstats[1] <- md.lf_20 * sum(lf_in30 == 1)
+lf_20_nfstats[2] <- md.nonlf_20 * sum(lf_in30 == 0)
+
+lf_20_nfstats_in30_all[[i]] <- lf_20_nfstats
+}
+
+#lf40
+lf_40_nfstats_in30_all <- list()
+
+for(i in(1:20)){
+  
+md.lf_40 <- mn.lf_40.rel*i
+md.nonlf_40 <- (i - (md.lf_40 * 0.30))/(1-0.30)
+
+assign((paste0("edges.lf_40.md", i)), (md.lf_40 * sum(lf_in30 == 1)))
+assign(paste0("edges.nonlf_40.md", i), md.nonlf_40 * sum(lf_in30 == 0))
+
+lf_40_nfstats <- numeric(2)
+lf_40_nfstats[1] <- md.lf_40 * sum(lf_in30 == 1)
+lf_40_nfstats[2] <- md.nonlf_40 * sum(lf_in30 == 0)
+
+lf_40_nfstats_in30_all[[i]] <- lf_40_nfstats
+}
+
+###Prevalence = 0.40
+#lf10
+lf_10_nfstats_in40_all <- list()
+
+for(i in(1:20)){
+  
+md.lf_10 <- mn.lf_10.rel*i
+md.nonlf_10 <- (i - (md.lf_10 * 0.40))/(1-0.40)
+
+assign((paste0("edges.lf_10.md", i)), (md.lf_10 * sum(lf_in40 == 1)))
+assign(paste0("edges.nonlf_10.md", i), md.nonlf_10 * sum(lf_in40 == 0))
+
+lf_10_nfstats <- numeric(2)
+lf_10_nfstats[1] <- md.lf_10 * sum(lf_in40 == 1)
+lf_10_nfstats[2] <- md.nonlf_10 * sum(lf_in40 == 0)
+
+lf_10_nfstats_in40_all[[i]] <- lf_10_nfstats
+}
+
+#lf20
+lf_20_nfstats_in40_all <- list()
+
+for(i in(1:20)){
+  
+md.lf_20 <- mn.lf_20.rel*i
+md.nonlf_20 <- (i - (md.lf_20 * 0.40))/(1-0.40)
+
+assign((paste0("edges.lf_20.md", i)), (md.lf_20 * sum(lf_in40 == 1)))
+assign(paste0("edges.nonlf_20.md", i), md.nonlf_20 * sum(lf_in40 == 0))
+
+lf_20_nfstats <- numeric(2)
+lf_20_nfstats[1] <- md.lf_20 * sum(lf_in40 == 1)
+lf_20_nfstats[2] <- md.nonlf_20 * sum(lf_in40 == 0)
+
+lf_20_nfstats_in40_all[[i]] <- lf_20_nfstats
+}
+
+#lf40
+lf_40_nfstats_in40_all <- list()
+
+for(i in(1:20)){
+  
+md.lf_40 <- mn.lf_40.rel*i
+md.nonlf_40 <- (i - (md.lf_40 * 0.40))/(1-0.40)
+
+assign((paste0("edges.lf_40.md", i)), (md.lf_40 * sum(lf_in40 == 1)))
+assign(paste0("edges.nonlf_40.md", i), md.nonlf_40 * sum(lf_in40 == 0))
+
+lf_40_nfstats <- numeric(2)
+lf_40_nfstats[1] <- md.lf_40 * sum(lf_in40 == 1)
+lf_40_nfstats[2] <- md.nonlf_40 * sum(lf_in40 == 0)
+
+lf_40_nfstats_in40_all[[i]] <- lf_40_nfstats
+}
+
+# Combine all vars into a dataframe, where the columns are latent factor categories (y/n), rows are mean degrees. 
+# e.g. for md2 models, lf_10_nfstats_in10_mat[1,x] where x is 1 if lf, 2 if not
+
+lf_10_nfstats_in10_mat <- matrix(unlist(lf_10_nfstats_in10_all), nrow=20, ncol=2, byrow=TRUE)
+lf_10_nfstats_in20_mat <- matrix(unlist(lf_10_nfstats_in20_all), nrow=20, ncol=2, byrow=TRUE)
+lf_10_nfstats_in30_mat <- matrix(unlist(lf_10_nfstats_in30_all), nrow=20, ncol=2, byrow=TRUE)
+lf_10_nfstats_in40_mat <- matrix(unlist(lf_10_nfstats_in40_all), nrow=20, ncol=2, byrow=TRUE)
+
+lf_20_nfstats_in10_mat <- matrix(unlist(lf_20_nfstats_in10_all), nrow=20, ncol=2, byrow=TRUE)
+lf_20_nfstats_in20_mat <- matrix(unlist(lf_20_nfstats_in20_all), nrow=20, ncol=2, byrow=TRUE)
+lf_20_nfstats_in30_mat <- matrix(unlist(lf_20_nfstats_in30_all), nrow=20, ncol=2, byrow=TRUE)
+lf_20_nfstats_in40_mat <- matrix(unlist(lf_20_nfstats_in40_all), nrow=20, ncol=2, byrow=TRUE)
+
+lf_40_nfstats_in10_mat <- matrix(unlist(lf_40_nfstats_in10_all), nrow=20, ncol=2, byrow=TRUE)
+lf_40_nfstats_in20_mat <- matrix(unlist(lf_40_nfstats_in20_all), nrow=20, ncol=2, byrow=TRUE)
+lf_40_nfstats_in30_mat <- matrix(unlist(lf_40_nfstats_in30_all), nrow=20, ncol=2, byrow=TRUE)
+lf_40_nfstats_in40_mat <- matrix(unlist(lf_40_nfstats_in40_all), nrow=20, ncol=2, byrow=TRUE)
+
+```
+
+
+
+```{r, run lf models}
+
+# Run ERGMs for all latent factor models
+
+#Prevalence = 0.10 (lf10, 20, 40)
+nw_lf_10in10 <- list()
+
+for(i in c(2, 5, 8, 10, 15, 20)){
+
+  
+nw <- ergm(nw_sim_un ~ edges + nodefactor("hp", base = 1) + nodefactor("yr", base = 1) + nodefactor("cough", base = 5:6) + nodefactor("smstat_age", base = c(1, 4:5, 8)) + nodefactor("hiv_age", base = c(1:5, 8)) + nodefactor("lf_10", base = 1), control = control.ergm(MCMC.burnin = 100000, MCMC.samplesize=10000, MCMLE.maxit = 100, MCMC.interval = 5000, MCMLE.density.guard = exp(10)),
+                                    target.stats = c(edges_nfstats[i,2], 
+                                          hp_nfstats_mat[i,1], 
+                                          yr_nfstats_mat[i,2], yr_nfstats_mat[i,3], yr_nfstats_mat[i,4],
+                                          cough_nfstats_mat[i,1], cough_nfstats_mat[i,2], cough_nfstats_mat[i,3], cough_nfstats_mat[i,4], 
+                                          smage_nfstats_mat[i,2], smage_nfstats_mat[i,3], smage_nfstats_mat[i,6], smage_nfstats_mat[i,7],
+                                          hivage_nfstats_mat[i,6], hivage_nfstats_mat[i,7],
+                                          lf_10_nfstats_in10_mat[i,1]))
+
+nw_lf_10in10[[i]]<- nw
+
+saveRDS(nw, file = paste("nw", n_sim, "md", i, "lf10in10.RDS", sep = "_"))
+
+  }
+  
+nw_lf_20in10 <- list()
+
+for(i in c(2, 5, 8, 10, 15, 20)){
+
+  
+nw <- ergm(nw_sim_un ~ edges + nodefactor("hp", base = 1) + nodefactor("yr", base = 1) + nodefactor("cough", base = 5:6) + nodefactor("smstat_age", base = c(1, 4:5, 8)) + nodefactor("hiv_age", base = c(1:5, 8)) + nodefactor("lf_10", base = 1), control = control.ergm(MCMC.burnin = 100000, MCMC.samplesize=10000, MCMLE.maxit = 100, MCMC.interval = 5000, MCMLE.density.guard = exp(10)),
+                                    target.stats = c(edges_nfstats[i,2], 
+                                          hp_nfstats_mat[i,1], 
+                                          yr_nfstats_mat[i,2], yr_nfstats_mat[i,3], yr_nfstats_mat[i,4],
+                                          cough_nfstats_mat[i,1], cough_nfstats_mat[i,2], cough_nfstats_mat[i,3], cough_nfstats_mat[i,4], 
+                                          smage_nfstats_mat[i,2], smage_nfstats_mat[i,3], smage_nfstats_mat[i,6], smage_nfstats_mat[i,7],
+                                          hivage_nfstats_mat[i,6], hivage_nfstats_mat[i,7],
+                                          lf_20_nfstats_in10_mat[i,1]))
+
+nw_lf_20in10[[i]]<- nw
+
+saveRDS(nw, file = paste("nw", n_sim, "md", i, "lf20in10.RDS", sep = "_"))
+
+}
+
+nw_lf_40in10 <- list()
+
+for(i in c(2, 5, 8, 10, 15, 20)){
+
+  
+nw <- ergm(nw_sim_un ~ edges + nodefactor("hp", base = 1) + nodefactor("yr", base = 1) + nodefactor("cough", base = 5:6) + nodefactor("smstat_age", base = c(1, 4:5, 8)) + nodefactor("hiv_age", base = c(1:5, 8)) + nodefactor("lf_10", base = 1), control = control.ergm(MCMC.burnin = 100000, MCMC.samplesize=10000, MCMLE.maxit = 100, MCMC.interval = 5000, MCMLE.density.guard = exp(10)),
+                                    target.stats = c(edges_nfstats[i,2], 
+                                          hp_nfstats_mat[i,1], 
+                                          yr_nfstats_mat[i,2], yr_nfstats_mat[i,3], yr_nfstats_mat[i,4],
+                                          cough_nfstats_mat[i,1], cough_nfstats_mat[i,2], cough_nfstats_mat[i,3], cough_nfstats_mat[i,4], 
+                                          smage_nfstats_mat[i,2], smage_nfstats_mat[i,3], smage_nfstats_mat[i,6], smage_nfstats_mat[i,7],
+                                          hivage_nfstats_mat[i,6], hivage_nfstats_mat[i,7],
+                                          lf_40_nfstats_in10_mat[i,1]))
+
+nw_lf_40in10[[i]]<- nw
+
+saveRDS(nw, file = paste("nw", n_sim, "md", i, "lf40in10.RDS", sep = "_"))
+
+  }
+
+#Prevalence = 0.20 (lf10, 20)
+nw_lf_10in20 <- list()
+
+for(i in c(2, 5, 8, 10, 15, 20)){
+
+  
+nw <- ergm(nw_sim_un ~ edges + nodefactor("hp", base = 1) + nodefactor("yr", base = 1) + nodefactor("cough", base = 5:6) + nodefactor("smstat_age", base = c(1, 4:5, 8)) + nodefactor("hiv_age", base = c(1:5, 8)) + nodefactor("lf_20", base = 1), control = control.ergm(MCMC.burnin = 100000, MCMC.samplesize=10000, MCMLE.maxit = 100, MCMC.interval = 5000, MCMLE.density.guard = exp(10)),
+                                    target.stats = c(edges_nfstats[i,2], 
+                                          hp_nfstats_mat[i,1], 
+                                          yr_nfstats_mat[i,2], yr_nfstats_mat[i,3], yr_nfstats_mat[i,4],
+                                          cough_nfstats_mat[i,1], cough_nfstats_mat[i,2], cough_nfstats_mat[i,3], cough_nfstats_mat[i,4], 
+                                          smage_nfstats_mat[i,2], smage_nfstats_mat[i,3], smage_nfstats_mat[i,6], smage_nfstats_mat[i,7],
+                                          hivage_nfstats_mat[i,6], hivage_nfstats_mat[i,7],
+                                          lf_10_nfstats_in20_mat[i,1]))
+
+nw_lf_10in20[[i]]<- nw
+
+saveRDS(nw, file = paste("nw", n_sim, "md", i, "lf10in20.RDS", sep = "_"))
+
+  }
+  
+nw_lf_20in20 <- list()
+
+for(i in c(2, 5, 8, 10, 15, 20)){
+
+  
+nw <- ergm(nw_sim_un ~ edges + nodefactor("hp", base = 1) + nodefactor("yr", base = 1) + nodefactor("cough", base = 5:6) + nodefactor("smstat_age", base = c(1, 4:5, 8)) + nodefactor("hiv_age", base = c(1:5, 8)) + nodefactor("lf_20", base = 1), control = control.ergm(MCMC.burnin = 100000, MCMC.samplesize=10000, MCMLE.maxit = 100, MCMC.interval = 5000, MCMLE.density.guard = exp(10)),
+                                    target.stats = c(edges_nfstats[i,2], 
+                                          hp_nfstats_mat[i,1], 
+                                          yr_nfstats_mat[i,2], yr_nfstats_mat[i,3], yr_nfstats_mat[i,4],
+                                          cough_nfstats_mat[i,1], cough_nfstats_mat[i,2], cough_nfstats_mat[i,3], cough_nfstats_mat[i,4], 
+                                          smage_nfstats_mat[i,2], smage_nfstats_mat[i,3], smage_nfstats_mat[i,6], smage_nfstats_mat[i,7],
+                                          hivage_nfstats_mat[i,6], hivage_nfstats_mat[i,7],
+                                          lf_20_nfstats_in20_mat[i,1]))
+
+nw_lf_20in20[[i]]<- nw
+
+saveRDS(nw, file = paste("nw", n_sim, "md", i, "lf20in20.RDS", sep = "_"))
+
+  }
+
+
+# Re-load network objects
+nw_lf_40in10 <- list()
+nw_lf_40in10[[2]] <- readRDS("nw_2000_md_2_lf40in10.RDS")
+nw_lf_40in10[[5]] <- readRDS("nw_2000_md_5_lf40in10.RDS")
+nw_lf_40in10[[8]] <- readRDS("nw_2000_md_8_lf40in10.RDS")
+nw_lf_40in10[[10]] <- readRDS("nw_2000_md_10_lf40in10.RDS")
+nw_lf_40in10[[15]] <- readRDS("nw_2000_md_15_lf40in10.RDS")
+nw_lf_40in10[[20]] <- readRDS("nw_2000_md_20_lf40in10.RDS")
+nw_lf_40in10 
+
+nw_lf_20in10 <- list()
+nw_lf_20in10[[2]] <- readRDS("nw_2000_md_2_lf20in10.RDS")
+nw_lf_20in10[[5]] <- readRDS("nw_2000_md_5_lf20in10.RDS")
+nw_lf_20in10[[8]] <- readRDS("nw_2000_md_8_lf20in10.RDS")
+nw_lf_20in10[[10]] <- readRDS("nw_2000_md_10_lf20in10.RDS")
+nw_lf_20in10[[15]] <- readRDS("nw_2000_md_15_lf20in10.RDS")
+nw_lf_20in10[[20]] <- readRDS("nw_2000_md_20_lf20in10.RDS")
+nw_lf_20in10 
+
+nw_lf_10in10 <- list()
+nw_lf_10in10[[2]] <- readRDS("nw_2000_md_2_lf10in10.RDS")
+nw_lf_10in10[[5]] <- readRDS("nw_2000_md_5_lf10in10.RDS")
+nw_lf_10in10[[8]] <- readRDS("nw_2000_md_8_lf10in10.RDS")
+nw_lf_10in10[[10]] <- readRDS("nw_2000_md_10_lf10in10.RDS")
+nw_lf_10in10[[15]] <- readRDS("nw_2000_md_15_lf10in10.RDS")
+nw_lf_10in10[[20]] <- readRDS("nw_2000_md_20_lf10in10.RDS")
+nw_lf_10in10 
+
+
+
+
+for(k in(c(2, 5, 8, 10, 15, 20))){
+  
+        degdist <- list()
+      
+        med <- list()
+        
+for(i in 1:nsamples){
+    
+      nw_sim <- simulate(nw_lf_40in10[[k]], nsim = 1, monitor = ~ degree(0:100) + meandeg) # simulate a network from a model with mean degree k
+    
+      sim_deg <- degree(get.inducedSubgraph(nw_sim, ransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE) # sample the network
+      
+      simdegdist <- table(sim_deg) 
+      
+      degdist[[i]] <- as.data.frame(simdegdist)
+      
+      quantiles <- quantile(sim_deg, c(0.1, 0.25, 0.50, 0.75, 1)) # extract degrees at quantiles of the degree distribution
+      
+      med[[i]] <- as.vector(quantiles)
+      
+      rm(nw_sim) # delete the network object
+      
+    } 
+      saveRDS(degdist, file = paste("nw", n_sim, "sim", nsamples, "nonran_md", k, "lf40in10_degdist.RDS", sep = "_"))
+      saveRDS(med, file = paste("nw", n_sim, "sim", nsamples, "nonran_md", k, "lf40in10_med.RDS", sep = "_"))
+}
+
+
+```
+
+
+Results, quantiles of degree distributions of sampled networks for all models/scenarios
+
+```{r, results}
+#-------------------------------------------------#v
+# Table 2
+#-------------------------------------------------#
+
+# Scenario 1
+
+med <- list()
+degdist <- list()
+
+med[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_med.RDS"))
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_degdist.RDS"))
+med[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_med.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_degdist.RDS"))
+med[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_med.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_degdist.RDS"))
+med[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_med.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_degdist.RDS"))
+
+quants <- list()
+quants_all <- list()
+
+for(k in(c(2, 5, 10, 20))){
+
+quants[[k]] <- list()
+
+ for(i in 1:nsamples){ #i indexes the network
+   
+    quantsnum <- numeric(5)
+    quantsnum[1] <- med[[k]][[i]][1] #FIRST VALUE: look at 10th percentile, i, put in first element of quants list
+    quantsnum[2] <- med[[k]][[i]][2] #FIRST VALUE: look at 25th percentile, i, put in second element of quants list
+    quantsnum[3] <- med[[k]][[i]][3] #FIRST VALUE: look at 50th percentile, i, put in third element of quants list
+    quantsnum[4] <- med[[k]][[i]][4] #FIRST VALUE: look at 75th percentile, i, put in fourth element of quants list
+    quantsnum[5] <- med[[k]][[i]][5] #FIRST VALUE: look at 100th percentile (max), i, put in fifth element of quants list
+    quants[[i]] <- quantsnum
+
+    }
+
+quants_all[[k]] <- quants
+
+}
+
+quants_all.2 <- data.frame(matrix(unlist(quants_all[[2]]), nrow=1000, byrow=T))
+colnames(quants_all.2) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.2["q.10"])
+summary(quants_all.2["q.25"])
+summary(quants_all.2["q.50"])
+summary(quants_all.2["q.75"])
+summary(quants_all.2["q.100"])
+
+quants_all.5 <- data.frame(matrix(unlist(quants_all[[5]]), nrow=1000, byrow=T))
+colnames(quants_all.5) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.5["q.10"])
+summary(quants_all.5["q.25"])
+summary(quants_all.5["q.50"])
+summary(quants_all.5["q.75"])
+summary(quants_all.5["q.100"])
+
+quants_all.10 <- data.frame(matrix(unlist(quants_all[[10]]), nrow=1000, byrow=T))
+colnames(quants_all.10) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.10["q.10"])
+summary(quants_all.10["q.25"])
+summary(quants_all.10["q.50"])
+summary(quants_all.10["q.75"])
+summary(quants_all.10["q.100"])
+
+quants_all.20 <- data.frame(matrix(unlist(quants_all[[20]]), nrow=1000, byrow=T))
+colnames(quants_all.20) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.20["q.10"])
+summary(quants_all.20["q.25"])
+summary(quants_all.20["q.50"])
+summary(quants_all.20["q.75"])
+summary(quants_all.20["q.100"])
+
+# Scenario 2
+
+med <- list()
+degdist <- list()
+
+
+# LOAD EITHER SCENARIO 2A or SCENARIO 2B NETWORKS
+
+# Oversampling high-transmitters (scenario 2a)
+med[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_2_med.RDS"))
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_2_degdist.RDS"))
+med[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_5_med.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_5_degdist.RDS"))
+med[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_10_med.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_10_degdist.RDS"))
+med[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_20_med.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_20_degdist.RDS"))
+
+# Oversampling low-transmitters (scenario 2b)
+med[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_2_med.RDS"))
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_2_degdist.RDS"))
+med[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_5_med.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_5_degdist.RDS"))
+med[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_10_med.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_10_degdist.RDS"))
+med[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_20_med.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_20_degdist.RDS"))
+
+
+quants <- list()
+quants_all <- list()
+
+for(k in(c(2, 5, 10, 20))){
+
+quants[[k]] <- list()
+
+ for(i in 1:nsamples){ #i indexes the network
+   
+    quantsnum <- numeric(5)
+    quantsnum[1] <- med[[k]][[i]][1] #FIRST VALUE: look at 10th percentile, i, put in first element of quants list
+    quantsnum[2] <- med[[k]][[i]][2] #FIRST VALUE: look at 25th percentile, i, put in second element of quants list
+    quantsnum[3] <- med[[k]][[i]][3] #FIRST VALUE: look at 50th percentile, i, put in third element of quants list
+    quantsnum[4] <- med[[k]][[i]][4] #FIRST VALUE: look at 75th percentile, i, put in fourth element of quants list
+    quantsnum[5] <- med[[k]][[i]][5] #FIRST VALUE: look at 100th percentile (max), i, put in fifth element of quants list
+    quants[[i]] <- quantsnum
+
+    }
+
+quants_all[[k]] <- quants
+
+}
+
+quants_all.2 <- data.frame(matrix(unlist(quants_all[[2]]), nrow=1000, byrow=T))
+colnames(quants_all.2) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.2["q.10"])
+summary(quants_all.2["q.25"])
+summary(quants_all.2["q.50"])
+summary(quants_all.2["q.75"])
+summary(quants_all.2["q.100"])
+
+quants_all.5 <- data.frame(matrix(unlist(quants_all[[5]]), nrow=1000, byrow=T))
+colnames(quants_all.5) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.5["q.10"])
+summary(quants_all.5["q.25"])
+summary(quants_all.5["q.50"])
+summary(quants_all.5["q.75"])
+summary(quants_all.5["q.100"])
+
+quants_all.10 <- data.frame(matrix(unlist(quants_all[[10]]), nrow=1000, byrow=T))
+colnames(quants_all.10) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.10["q.10"])
+summary(quants_all.10["q.25"])
+summary(quants_all.10["q.50"])
+summary(quants_all.10["q.75"])
+summary(quants_all.10["q.100"])
+
+quants_all.20 <- data.frame(matrix(unlist(quants_all[[20]]), nrow=1000, byrow=T))
+colnames(quants_all.20) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.20["q.10"])
+summary(quants_all.20["q.25"])
+summary(quants_all.20["q.50"])
+summary(quants_all.20["q.75"])
+summary(quants_all.20["q.100"])
+
+
+#-------------------------------------------------#
+# Table 3
+#-------------------------------------------------#
+
+# Scenario 3 
+
+# LOAD EITHER 50/50 or 70/30 SMEAR SCENARIO
+
+med <- list()
+degdist <- list()
+
+# 50/50 smear -/+
+med[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_c1_med.RDS"))
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_c1_degdist.RDS"))
+med[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_c1_med.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_c1_degdist.RDS"))
+med[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_c1_med.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_c1_degdist.RDS"))
+med[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_c1_med.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_c1_degdist.RDS"))
+
+# 70/30 smear -/+
+med[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_c2_med.RDS"))
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_c2_degdist.RDS"))
+med[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_c2_med.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_c2_degdist.RDS"))
+med[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_c2_med.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_c2_degdist.RDS"))
+med[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_c2_med.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_c2_degdist.RDS"))
+
+
+quants <- list()
+quants_all <- list()
+
+for(k in(c(2, 5, 10, 20))){
+
+quants[[k]] <- list()
+
+ for(i in 1:nsamples){ #i indexes the network
+   
+    quantsnum <- numeric(5)
+    quantsnum[1] <- med[[k]][[i]][1] #FIRST VALUE: look at 10th percentile, i, put in first element of quants list
+    quantsnum[2] <- med[[k]][[i]][2] #FIRST VALUE: look at 25th percentile, i, put in second element of quants list
+    quantsnum[3] <- med[[k]][[i]][3] #FIRST VALUE: look at 50th percentile, i, put in third element of quants list
+    quantsnum[4] <- med[[k]][[i]][4] #FIRST VALUE: look at 75th percentile, i, put in fourth element of quants list
+    quantsnum[5] <- med[[k]][[i]][5] #FIRST VALUE: look at 100th percentile (max), i, put in fifth element of quants list
+    quants[[i]] <- quantsnum
+
+    }
+
+quants_all[[k]] <- quants
+
+}
+
+quants_all.2 <- data.frame(matrix(unlist(quants_all[[2]]), nrow=1000, byrow=T))
+colnames(quants_all.2) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.2["q.10"])
+summary(quants_all.2["q.25"])
+summary(quants_all.2["q.50"])
+summary(quants_all.2["q.75"])
+summary(quants_all.2["q.100"])
+
+quants_all.5 <- data.frame(matrix(unlist(quants_all[[5]]), nrow=1000, byrow=T))
+colnames(quants_all.5) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.5["q.10"])
+summary(quants_all.5["q.25"])
+summary(quants_all.5["q.50"])
+summary(quants_all.5["q.75"])
+summary(quants_all.5["q.100"])
+
+quants_all.10 <- data.frame(matrix(unlist(quants_all[[10]]), nrow=1000, byrow=T))
+colnames(quants_all.10) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.10["q.10"])
+summary(quants_all.10["q.25"])
+summary(quants_all.10["q.50"])
+summary(quants_all.10["q.75"])
+summary(quants_all.10["q.100"])
+
+quants_all.20 <- data.frame(matrix(unlist(quants_all[[20]]), nrow=1000, byrow=T))
+colnames(quants_all.20) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.20["q.10"])
+summary(quants_all.20["q.25"])
+summary(quants_all.20["q.50"])
+summary(quants_all.20["q.75"])
+summary(quants_all.20["q.100"])
+
+
+
+# Scenario 4
+
+med <- list()
+degdist <- list()
+
+# LF 40in10
+med[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_lf40in10_med.RDS"))
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_lf40in10_degdist.RDS"))
+med[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_lf40in10_med.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_lf40in10_degdist.RDS"))
+med[[8]] <- readRDS(here("/Output/nw_2000_sim_1000_md_8_lf40in10_med.RDS"))
+degdist[[8]] <- readRDS(here("/Output/nw_2000_sim_1000_md_8_lf40in10_degdist.RDS"))
+med[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_lf40in10_med.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_lf40in10_degdist.RDS"))
+med[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_lf40in10_med.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_lf40in10_degdist.RDS"))
+
+
+quants <- list()
+quants_all <- list()
+
+for(k in(c(2, 5, 10, 20))){
+
+quants[[k]] <- list()
+
+ for(i in 1:nsamples){ #i indexes the network
+   
+    quantsnum <- numeric(5)
+    quantsnum[1] <- med[[k]][[i]][1] #FIRST VALUE: look at 10th percentile, i, put in first element of quants list
+    quantsnum[2] <- med[[k]][[i]][2] #FIRST VALUE: look at 25th percentile, i, put in second element of quants list
+    quantsnum[3] <- med[[k]][[i]][3] #FIRST VALUE: look at 50th percentile, i, put in third element of quants list
+    quantsnum[4] <- med[[k]][[i]][4] #FIRST VALUE: look at 75th percentile, i, put in fourth element of quants list
+    quantsnum[5] <- med[[k]][[i]][5] #FIRST VALUE: look at 100th percentile (max), i, put in fifth element of quants list
+    quants[[i]] <- quantsnum
+
+    }
+
+quants_all[[k]] <- quants
+
+}
+
+quants_all.2 <- data.frame(matrix(unlist(quants_all[[2]]), nrow=1000, byrow=T))
+colnames(quants_all.2) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.2["q.10"])
+summary(quants_all.2["q.25"])
+summary(quants_all.2["q.50"])
+summary(quants_all.2["q.75"])
+summary(quants_all.2["q.100"])
+
+quants_all.5 <- data.frame(matrix(unlist(quants_all[[5]]), nrow=1000, byrow=T))
+colnames(quants_all.5) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.5["q.10"])
+summary(quants_all.5["q.25"])
+summary(quants_all.5["q.50"])
+summary(quants_all.5["q.75"])
+summary(quants_all.5["q.100"])
+
+quants_all.10 <- data.frame(matrix(unlist(quants_all[[10]]), nrow=1000, byrow=T))
+colnames(quants_all.10) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.10["q.10"])
+summary(quants_all.10["q.25"])
+summary(quants_all.10["q.50"])
+summary(quants_all.10["q.75"])
+summary(quants_all.10["q.100"])
+
+quants_all.20 <- data.frame(matrix(unlist(quants_all[[20]]), nrow=1000, byrow=T))
+colnames(quants_all.20) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.20["q.10"])
+summary(quants_all.20["q.25"])
+summary(quants_all.20["q.50"])
+summary(quants_all.20["q.75"])
+summary(quants_all.20["q.100"])
+
+
+
+#-------------------------------------------------#
+# Supplemental table 2 (other network sizes, n = 4000, n = 1500, n = 500)
+#-------------------------------------------------#
+
+med <- list()
+degdist <- list()
+
+# n = 4000
+med[[2]] <- readRDS(here("/Output/nw_4000_sim_1000_md_2_med.RDS"))
+degdist[[2]] <- readRDS(here("/Output/nw_4000_sim_1000_md_2_degdist.RDS"))
+med[[5]] <- readRDS(here("/Output/nw_4000_sim_1000_md_5_med.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_4000_sim_1000_md_5_degdist.RDS"))
+med[[10]] <- readRDS(here("/Output/nw_4000_sim_1000_md_10_med.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_4000_sim_1000_md_10_degdist.RDS"))
+med[[20]] <- readRDS(here("/Output/nw_4000_sim_1000_md_20_med.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_4000_sim_1000_md_20_degdist.RDS"))
+
+# n = 1500
+med[[2]] <- readRDS(here("/Output/nw_1500_sim_1000_md_2_med.RDS"))
+degdist[[2]] <- readRDS(here("/Output/nw_1500_sim_1000_md_2_degdist.RDS"))
+med[[5]] <- readRDS(here("/Output/nw_1500_sim_1000_md_5_med.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_1500_sim_1000_md_5_degdist.RDS"))
+med[[10]] <- readRDS(here("/Output/nw_1500_sim_1000_md_10_med.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_1500_sim_1000_md_10_degdist.RDS"))
+med[[20]] <- readRDS(here("/Output/nw_1500_sim_1000_md_20_med.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_1500_sim_1000_md_20_degdist.RDS"))
+
+# n = 500
+med[[2]] <- readRDS(here("/Output/nw_500_sim_1000_md_2_med.RDS"))
+degdist[[2]] <- readRDS(here("/Output/nw_500_sim_1000_md_2_degdist.RDS"))
+med[[5]] <- readRDS(here("/Output/nw_500_sim_1000_md_5_med.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_500_sim_1000_md_5_degdist.RDS"))
+med[[10]] <- readRDS(here("/Output/nw_500_sim_1000_md_10_med.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_500_sim_1000_md_10_degdist.RDS"))
+med[[20]] <- readRDS(here("/Output/nw_500_sim_1000_md_20_med.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_500_sim_1000_md_20_degdist.RDS"))
+
+
+quants <- list()
+quants_all <- list()
+
+for(k in(c(2, 5, 10, 20))){
+
+quants[[k]] <- list()
+
+ for(i in 1:nsamples){ #i indexes the network
+   
+    quantsnum <- numeric(5)
+    quantsnum[1] <- med[[k]][[i]][1] #FIRST VALUE: look at 10th percentile, i, put in first element of quants list
+    quantsnum[2] <- med[[k]][[i]][2] #FIRST VALUE: look at 25th percentile, i, put in second element of quants list
+    quantsnum[3] <- med[[k]][[i]][3] #FIRST VALUE: look at 50th percentile, i, put in third element of quants list
+    quantsnum[4] <- med[[k]][[i]][4] #FIRST VALUE: look at 75th percentile, i, put in fourth element of quants list
+    quantsnum[5] <- med[[k]][[i]][5] #FIRST VALUE: look at 100th percentile (max), i, put in fifth element of quants list
+    quants[[i]] <- quantsnum
+
+    }
+
+quants_all[[k]] <- quants
+
+}
+
+quants_all.2 <- data.frame(matrix(unlist(quants_all[[2]]), nrow=1000, byrow=T))
+colnames(quants_all.2) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.2["q.10"])
+summary(quants_all.2["q.25"])
+summary(quants_all.2["q.50"])
+summary(quants_all.2["q.75"])
+summary(quants_all.2["q.100"])
+
+quants_all.5 <- data.frame(matrix(unlist(quants_all[[5]]), nrow=1000, byrow=T))
+colnames(quants_all.5) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.5["q.10"])
+summary(quants_all.5["q.25"])
+summary(quants_all.5["q.50"])
+summary(quants_all.5["q.75"])
+summary(quants_all.5["q.100"])
+
+quants_all.10 <- data.frame(matrix(unlist(quants_all[[10]]), nrow=1000, byrow=T))
+colnames(quants_all.10) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.10["q.10"])
+summary(quants_all.10["q.25"])
+summary(quants_all.10["q.50"])
+summary(quants_all.10["q.75"])
+summary(quants_all.10["q.100"])
+
+quants_all.20 <- data.frame(matrix(unlist(quants_all[[20]]), nrow=1000, byrow=T))
+colnames(quants_all.20) <- c("q.10", "q.25", "q.50", "q.75", "q.100")
+summary(quants_all.20["q.10"])
+summary(quants_all.20["q.25"])
+summary(quants_all.20["q.50"])
+summary(quants_all.20["q.75"])
+summary(quants_all.20["q.100"])
+
+```
+
+
+```{r}
+#############################################################
+################### FIGURES #################################
+#############################################################
+
+# FIRST, read in empirical TRAX network distributions
+
+# 5-SNP network
+deg_le5 <- readRDS(here("deg_le5.RDS"))
+
+# 3-SNP network
+deg_le3 <- readRDS(here("deg_le3.RDS"))
+
+
+#-------------------------------------------------#
+# Figure 2A
+#-------------------------------------------------#
+
+# Scenario 1
+
+degdist <- list()
+
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_degdist.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_degdist.RDS"))
+degdist[[8]] <- readRDS(here("/Output/nw_2000_sim_1000_md_8_degdist.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_degdist.RDS"))
+degdist[[15]] <- readRDS(here("/Output/nw_2000_sim_1000_md_15_degdist.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_degdist.RDS"))
+
+#data wrangling
+colmax <- max(as.numeric(as.character((unlist(sapply(degdist[[20]], `[[`, 1)))))) #PUT IN MAX DEGREE MODEL HERE
+df <- data.frame(matrix(ncol = (colmax + 1), nrow = nsamples))
+x <- c(0:colmax)
+colnames(df) <- x
+
+degdistall_forgraph <- list()
+
+for(k in(c(2, 5, 8, 10, 15, 20))){   #CHANGE BASED ON WHERE INFO IS STORED IN DEGDIST[[]]
+  
+
+degdistall <- do.call("rbind", lapply(degdist[[k]], 
+                      function(x) x[,2][match(colnames(df), as.character((x[,1])), nomatch = NA)]) ) 
+
+x <- c(paste0("deg", 0:colmax))
+colnames(degdistall) <- x
+
+degdistall_qu <- as.data.frame(t(apply(degdistall, 2, quantile, prob = c(0.25, 0.5, 0.75, 1), na.rm=TRUE)))
+
+colnames(degdistall_qu) <- c("q25", "med", "q75", "max")
+
+degdistall_qu$degree <- c(0:(nrow(degdistall_qu)-1))
+
+degdistall_forgraph[[k]] <- degdistall_qu
+
+}
+
+colnames(degdistall_forgraph[[2]]) <- c("q25.md2", "med.md2", "q75.md2", "max.md2", "degree")
+colnames(degdistall_forgraph[[5]]) <- c("q25.md5", "med.md5", "q75.md5", "max.md5", "degree")
+colnames(degdistall_forgraph[[8]]) <- c("q25.md8", "med.md8", "q75.md8", "max.md8", "degree")
+colnames(degdistall_forgraph[[10]]) <- c("q25.md10", "med.md10", "q75.md10", "max.md10", "degree")
+colnames(degdistall_forgraph[[15]]) <- c("q25.md15", "med.md15", "q75.md15", "max.md15", "degree")
+colnames(degdistall_forgraph[[20]]) <- c("q25.md20", "med.md20", "q75.md20", "max.md20", "degree")
+
+#add in empiric trax distribution (no IQR (all zeros), median is empiric frequency, need degree column)
+trax_emp <- matrix(nrow=38, ncol=5)
+trax_emp[,1] <- rep(0)
+trax_emp[,3] <- rep(0)
+trax_emp[,2] <- table(deg_le5) #need to run code from aim1_snpdata_descriptive for this
+trax_emp[,4] <- rep(0)
+trax_emp[,5] <- as.numeric(rownames(table(deg_le5)))
+colnames(trax_emp) <- c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")
+
+degdistall_forgraph[[1]] <- as.data.frame(trax_emp)
+degdistall_qu_join1 <- full_join(degdistall_forgraph[[2]], degdistall_forgraph[[5]], by = "degree")
+degdistall_qu_join2 <- full_join(degdistall_qu_join1, degdistall_forgraph[[8]], by = "degree")
+degdistall_qu_join3 <- full_join(degdistall_qu_join2, degdistall_forgraph[[10]], by = "degree")
+degdistall_qu_join4 <- full_join(degdistall_qu_join3, degdistall_forgraph[[15]], by = "degree")
+degdistall_qu_join5 <- full_join(degdistall_qu_join4, degdistall_forgraph[[20]], by = "degree")
+degdistall_qu_joined <- full_join(degdistall_qu_join5, degdistall_forgraph[[1]], by = "degree")
+
+degdistall_trax <- cbind(degdistall_qu_joined[, c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")], "TRAX")
+degdistall_md2 <- cbind(degdistall_qu_joined[, c("q25.md2", "med.md2", "q75.md2", "max.md2", "degree")], 2)
+degdistall_md5 <- cbind(degdistall_qu_joined[, c("q25.md5", "med.md5", "q75.md5", "max.md5", "degree")], 5)
+degdistall_md8 <- cbind(degdistall_qu_joined[, c("q25.md8", "med.md8", "q75.md8", "max.md8", "degree")], 8)
+degdistall_md10 <- cbind(degdistall_qu_joined[, c("q25.md10", "med.md10", "q75.md10", "max.md10", "degree")], 10)
+degdistall_md15 <- cbind(degdistall_qu_joined[, c("q25.md15", "med.md15", "q75.md15", "max.md15", "degree")], 15)
+degdistall_md20 <- cbind(degdistall_qu_joined[, c("q25.md20", "med.md20", "q75.md20", "max.md20", "degree")], 20)
+
+colnames(degdistall_trax) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md2) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md5) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md8) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md10) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md15) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md20) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+
+#now rearrange to put each md long rather than tall.
+tograph <- rbind(degdistall_md2, degdistall_md5, degdistall_md8, degdistall_md10, degdistall_md15, degdistall_md20, degdistall_trax)
+
+#for md2-20
+ggplot(tograph, aes(x=degree, y=med, colour = fullnw_md)) +
+  geom_line(data=function(x){x[!x$fullnw_md %in% c("TRAX"), ]}) +
+  geom_bar(aes(y=med), stat = "identity", position = "identity", fill="grey70", colour = "grey70", alpha = 6/10, width = 0.25, data=function(x){x[x$fullnw_md %in% c("TRAX"), ]} )+
+  coord_cartesian(xlim=c(0, 70), ylim=c(0, 350)) +
+  scale_x_continuous(breaks=seq(0, 70, 10)) + 
+  scale_color_manual(values=c("#41ae76", "#238b45", "#ccece6", "#005824", "#99d8c9", "#66c2a4", "grey30"), breaks=c("2", "5", "8", "10", "15", "20", "TRAX")) +
+  xlab("Degree") +
+  ylab("Median frequency") +
+  theme(legend.justification=c(1,1),legend.position=c(1,1),legend.title=element_blank(), legend.key = element_blank(), legend.text=element_text(size=16), panel.background = element_rect(fill = "white"), axis.text=element_text(size=16), axis.title=element_text(size=16))
+
+# Scenario 2
+
+degdist <- list()
+
+# LOAD EITHER SCENARIO 2A or SCENARIO 2B NETWORKS
+
+# Oversampling high-transmitters (scenario 2a)
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_2_degdist.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_5_degdist.RDS"))
+degdist[[8]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_8_degdist.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_10_degdist.RDS"))
+degdist[[15]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_15_degdist.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_20_degdist.RDS"))
+
+# Oversampling low-transmitters (scenario 2b)
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_2_degdist.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_5_degdist.RDS"))
+degdist[[8]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_8_degdist.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_10_degdist.RDS"))
+degdist[[15]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_15_degdist.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_20_degdist.RDS"))
+
+
+#data wrangling
+colmax <- max(as.numeric(as.character((unlist(sapply(degdist[[20]], `[[`, 1)))))) #PUT IN MAX DEGREE MODEL HERE
+df <- data.frame(matrix(ncol = (colmax + 1), nrow = nsamples))
+x <- c(0:colmax)
+colnames(df) <- x
+
+degdistall_forgraph <- list()
+
+for(k in(c(2, 5, 8, 10, 15, 20))){   #CHANGE BASED ON WHERE INFO IS STORED IN DEGDIST[[]]
+  
+
+degdistall <- do.call("rbind", lapply(degdist[[k]], 
+                      function(x) x[,2][match(colnames(df), as.character((x[,1])), nomatch = NA)]) ) 
+
+x <- c(paste0("deg", 0:colmax))
+colnames(degdistall) <- x
+
+degdistall_qu <- as.data.frame(t(apply(degdistall, 2, quantile, prob = c(0.25, 0.5, 0.75, 1), na.rm=TRUE)))
+
+colnames(degdistall_qu) <- c("q25", "med", "q75", "max")
+
+degdistall_qu$degree <- c(0:(nrow(degdistall_qu)-1))
+
+degdistall_forgraph[[k]] <- degdistall_qu
+
+}
+
+colnames(degdistall_forgraph[[2]]) <- c("q25.md2", "med.md2", "q75.md2", "max.md2", "degree")
+colnames(degdistall_forgraph[[5]]) <- c("q25.md5", "med.md5", "q75.md5", "max.md5", "degree")
+colnames(degdistall_forgraph[[8]]) <- c("q25.md8", "med.md8", "q75.md8", "max.md8", "degree")
+colnames(degdistall_forgraph[[10]]) <- c("q25.md10", "med.md10", "q75.md10", "max.md10", "degree")
+colnames(degdistall_forgraph[[15]]) <- c("q25.md15", "med.md15", "q75.md15", "max.md15", "degree")
+colnames(degdistall_forgraph[[20]]) <- c("q25.md20", "med.md20", "q75.md20", "max.md20", "degree")
+
+#add in empiric trax distribution (no IQR (all zeros), median is empiric frequency, need degree column)
+trax_emp <- matrix(nrow=38, ncol=5)
+trax_emp[,1] <- rep(0)
+trax_emp[,3] <- rep(0)
+trax_emp[,2] <- table(deg_le5) #need to run code from aim1_snpdata_descriptive for this
+trax_emp[,4] <- rep(0)
+trax_emp[,5] <- as.numeric(rownames(table(deg_le5)))
+colnames(trax_emp) <- c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")
+
+degdistall_forgraph[[1]] <- as.data.frame(trax_emp)
+degdistall_qu_join1 <- full_join(degdistall_forgraph[[2]], degdistall_forgraph[[5]], by = "degree")
+degdistall_qu_join2 <- full_join(degdistall_qu_join1, degdistall_forgraph[[8]], by = "degree")
+degdistall_qu_join3 <- full_join(degdistall_qu_join2, degdistall_forgraph[[10]], by = "degree")
+degdistall_qu_join4 <- full_join(degdistall_qu_join3, degdistall_forgraph[[15]], by = "degree")
+degdistall_qu_join5 <- full_join(degdistall_qu_join4, degdistall_forgraph[[20]], by = "degree")
+degdistall_qu_joined <- full_join(degdistall_qu_join5, degdistall_forgraph[[1]], by = "degree")
+
+degdistall_trax <- cbind(degdistall_qu_joined[, c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")], "TRAX")
+degdistall_md2 <- cbind(degdistall_qu_joined[, c("q25.md2", "med.md2", "q75.md2", "max.md2", "degree")], 2)
+degdistall_md5 <- cbind(degdistall_qu_joined[, c("q25.md5", "med.md5", "q75.md5", "max.md5", "degree")], 5)
+degdistall_md8 <- cbind(degdistall_qu_joined[, c("q25.md8", "med.md8", "q75.md8", "max.md8", "degree")], 8)
+degdistall_md10 <- cbind(degdistall_qu_joined[, c("q25.md10", "med.md10", "q75.md10", "max.md10", "degree")], 10)
+degdistall_md15 <- cbind(degdistall_qu_joined[, c("q25.md15", "med.md15", "q75.md15", "max.md15", "degree")], 15)
+degdistall_md20 <- cbind(degdistall_qu_joined[, c("q25.md20", "med.md20", "q75.md20", "max.md20", "degree")], 20)
+
+colnames(degdistall_trax) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md2) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md5) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md8) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md10) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md15) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md20) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+
+#now rearrange to put each md long rather than tall.
+tograph <- rbind(degdistall_md2, degdistall_md5, degdistall_md8, degdistall_md10, degdistall_md15, degdistall_md20, degdistall_trax)
+
+#for md2-20
+ggplot(tograph, aes(x=degree, y=med, colour = fullnw_md)) +
+  geom_line(data=function(x){x[!x$fullnw_md %in% c("TRAX"), ]}) +
+  geom_bar(aes(y=med), stat = "identity", position = "identity", fill="grey70", colour = "grey70", alpha = 6/10, width = 0.25, data=function(x){x[x$fullnw_md %in% c("TRAX"), ]} )+
+  coord_cartesian(xlim=c(0, 70), ylim=c(0, 350)) +
+  scale_x_continuous(breaks=seq(0, 70, 10)) + 
+  scale_color_manual(values=c("#41ae76", "#238b45", "#ccece6", "#005824", "#99d8c9", "#66c2a4", "grey30"), breaks=c("2", "5", "8", "10", "15", "20", "TRAX")) +
+  xlab("Degree") +
+  ylab("Median frequency") +
+  theme(legend.justification=c(1,1),legend.position=c(1,1),legend.title=element_blank(), legend.key = element_blank(), legend.text=element_text(size=16), panel.background = element_rect(fill = "white"), axis.text=element_text(size=16), axis.title=element_text(size=16))
+
+
+#-------------------------------------------------#
+# Figure 3A
+#-------------------------------------------------#
+
+# Scenario 3 
+
+degdist <- list()
+
+#different smear proportions, all with mean degree of 10
+degdist[[1]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_c1_degdist.RDS"))
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_c2_degdist.RDS"))
+degdist[[3]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_c3_degdist.RDS"))
+degdist[[4]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_c4_degdist.RDS"))
+
+#data wrangling
+colmax <- max(as.numeric(as.character((unlist(sapply(degdist[[1]], `[[`, 1)))))) #PUT IN MAX DEGREE MODEL HERE
+df <- data.frame(matrix(ncol = (colmax + 1), nrow = nsamples))
+x <- c(0:colmax)
+colnames(df) <- x
+
+degdistall_forgraph <- list()
+
+for(k in(c(1:4))){   #CHANGE BASED ON WHERE INFO IS STORED IN DEGDIST[[]]
+  
+
+degdistall <- do.call("rbind", lapply(degdist[[k]], 
+                      function(x) x[,2][match(colnames(df), as.character((x[,1])), nomatch = NA)]) ) 
+
+x <- c(paste0("deg", 0:colmax))
+colnames(degdistall) <- x
+
+degdistall_qu <- as.data.frame(t(apply(degdistall, 2, quantile, prob = c(0.25, 0.5, 0.75, 1), na.rm=TRUE)))
+
+colnames(degdistall_qu) <- c("q25", "med", "q75", "max")
+
+degdistall_qu$degree <- c(0:(nrow(degdistall_qu)-1))
+
+degdistall_forgraph[[k]] <- degdistall_qu
+
+}
+
+colnames(degdistall_forgraph[[1]]) <- c("q25.1", "med.1", "q75.1", "max.1", "degree")
+colnames(degdistall_forgraph[[2]]) <- c("q25.2", "med.2", "q75.2", "max.2", "degree")
+colnames(degdistall_forgraph[[3]]) <- c("q25.3", "med.3", "q75.3", "max.3", "degree")
+colnames(degdistall_forgraph[[4]]) <- c("q25.4", "med.4", "q75.4", "max.4", "degree")
+
+#add in empiric trax distribution (no IQR (all zeros), median is empiric frequency, need degree column)
+trax_emp <- matrix(nrow=38, ncol=5)
+trax_emp[,1] <- rep(0)
+trax_emp[,3] <- rep(0)
+trax_emp[,2] <- table(deg_le5) #need to run code from aim1_snpdata_descriptive for this
+trax_emp[,4] <- rep(0)
+trax_emp[,5] <- as.numeric(rownames(table(deg_le5)))
+colnames(trax_emp) <- c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")
+
+degdistall_forgraph[[5]] <- as.data.frame(trax_emp)
+degdistall_qu_join1 <- full_join(degdistall_forgraph[[1]], degdistall_forgraph[[2]], by = "degree")
+degdistall_qu_join2 <- full_join(degdistall_qu_join1, degdistall_forgraph[[3]], by = "degree")
+degdistall_qu_join3 <- full_join(degdistall_qu_join2, degdistall_forgraph[[4]], by = "degree")
+degdistall_qu_joined <- full_join(degdistall_qu_join3, degdistall_forgraph[[5]], by = "degree")
+
+degdistall_trax <- cbind(degdistall_qu_joined[, c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")], "TRAX")
+degdistall_1 <- cbind(degdistall_qu_joined[, c("q25.1", "med.1", "q75.1", "max.1", "degree")], 1)
+degdistall_2 <- cbind(degdistall_qu_joined[, c("q25.2", "med.2", "q75.2", "max.2", "degree")], 2)
+degdistall_3 <- cbind(degdistall_qu_joined[, c("q25.3", "med.3", "q75.3", "max.3", "degree")], 3)
+degdistall_4 <- cbind(degdistall_qu_joined[, c("q25.4", "med.4", "q75.4", "max.4", "degree")], 4)
+
+colnames(degdistall_trax) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_1) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_2) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_3) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_4) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+
+#now rearrange to put each md long rather than tall.
+tograph <- rbind(degdistall_1, degdistall_2, degdistall_3, degdistall_4, degdistall_trax)
+
+
+#graph for different smear status
+ggplot(tograph, aes(x=degree, y=med, colour = fullnw_md)) +
+  geom_line(data=function(x){x[!x$fullnw_md %in% c("TRAX"), ]}) +
+  geom_bar(aes(y=med), stat = "identity", position = "identity", fill="grey70", colour = "grey70", alpha = 9/10, width = 0.25, data=function(x){x[x$fullnw_md %in% c("TRAX"), ]} )+
+  scale_x_continuous(lim=c(-0.5, 70), breaks=seq(0, 70, 5)) + 
+  scale_y_continuous(lim=c(0, 200)) + 
+  scale_color_manual(values = c("#d7301f", "#fdbb84", "#fc8d59", "#990000", "#ef6548"), breaks=c("2", "TRAX", "3", "1", "4"), label = c("10% smear-negative", "23% smear-negative (TRAX)", "50% smear-negative", "60% smear-negative", "70% smear-negative")) +
+  xlab("Degree") +
+  ylab("Median frequency") +
+  theme(legend.justification=c(1,1),legend.position=c(1,1),legend.title=element_blank(), legend.key = element_blank(), legend.text=element_text(size=16), panel.background = element_rect(fill = "white"), axis.text=element_text(size=16), axis.title=element_text(size=16))
+
+
+# Scenario 4
+
+degdist <- list()
+
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_lf40in10_degdist.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_lf40in10_degdist.RDS"))
+degdist[[8]] <- readRDS(here("/Output/nw_2000_sim_1000_md_8_lf40in10_degdist.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_lf40in10_degdist.RDS"))
+degdist[[15]] <- readRDS(here("/Output/nw_2000_sim_1000_md_15_lf40in10_degdist.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_lf40in10_degdist.RDS"))
+
+#data wrangling
+colmax <- max(as.numeric(as.character((unlist(sapply(degdist[[20]], `[[`, 1)))))) #PUT IN MAX DEGREE MODEL HERE
+df <- data.frame(matrix(ncol = (colmax + 1), nrow = nsamples))
+x <- c(0:colmax)
+colnames(df) <- x
+
+degdistall_forgraph <- list()
+
+for(k in(c(2, 5, 8, 10, 15, 20))){   #CHANGE BASED ON WHERE INFO IS STORED IN DEGDIST[[]]
+  
+
+degdistall <- do.call("rbind", lapply(degdist[[k]], 
+                      function(x) x[,2][match(colnames(df), as.character((x[,1])), nomatch = NA)]) ) 
+
+x <- c(paste0("deg", 0:colmax))
+colnames(degdistall) <- x
+
+degdistall_qu <- as.data.frame(t(apply(degdistall, 2, quantile, prob = c(0.25, 0.5, 0.75, 1), na.rm=TRUE)))
+
+colnames(degdistall_qu) <- c("q25", "med", "q75", "max")
+
+degdistall_qu$degree <- c(0:(nrow(degdistall_qu)-1))
+
+degdistall_forgraph[[k]] <- degdistall_qu
+
+}
+
+colnames(degdistall_forgraph[[2]]) <- c("q25.md2", "med.md2", "q75.md2", "max.md2", "degree")
+colnames(degdistall_forgraph[[5]]) <- c("q25.md5", "med.md5", "q75.md5", "max.md5", "degree")
+colnames(degdistall_forgraph[[8]]) <- c("q25.md8", "med.md8", "q75.md8", "max.md8", "degree")
+colnames(degdistall_forgraph[[10]]) <- c("q25.md10", "med.md10", "q75.md10", "max.md10", "degree")
+colnames(degdistall_forgraph[[15]]) <- c("q25.md15", "med.md15", "q75.md15", "max.md15", "degree")
+colnames(degdistall_forgraph[[20]]) <- c("q25.md20", "med.md20", "q75.md20", "max.md20", "degree")
+
+#add in empiric trax distribution (no IQR (all zeros), median is empiric frequency, need degree column)
+trax_emp <- matrix(nrow=38, ncol=5)
+trax_emp[,1] <- rep(0)
+trax_emp[,3] <- rep(0)
+trax_emp[,2] <- table(deg_le5) #need to run code from aim1_snpdata_descriptive for this
+trax_emp[,4] <- rep(0)
+trax_emp[,5] <- as.numeric(rownames(table(deg_le5)))
+colnames(trax_emp) <- c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")
+
+degdistall_forgraph[[1]] <- as.data.frame(trax_emp)
+degdistall_qu_join1 <- full_join(degdistall_forgraph[[2]], degdistall_forgraph[[5]], by = "degree")
+degdistall_qu_join2 <- full_join(degdistall_qu_join1, degdistall_forgraph[[8]], by = "degree")
+degdistall_qu_join3 <- full_join(degdistall_qu_join2, degdistall_forgraph[[10]], by = "degree")
+degdistall_qu_join4 <- full_join(degdistall_qu_join3, degdistall_forgraph[[15]], by = "degree")
+degdistall_qu_join5 <- full_join(degdistall_qu_join4, degdistall_forgraph[[20]], by = "degree")
+degdistall_qu_joined <- full_join(degdistall_qu_join5, degdistall_forgraph[[1]], by = "degree")
+
+degdistall_trax <- cbind(degdistall_qu_joined[, c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")], "TRAX")
+degdistall_md2 <- cbind(degdistall_qu_joined[, c("q25.md2", "med.md2", "q75.md2", "max.md2", "degree")], 2)
+degdistall_md5 <- cbind(degdistall_qu_joined[, c("q25.md5", "med.md5", "q75.md5", "max.md5", "degree")], 5)
+degdistall_md8 <- cbind(degdistall_qu_joined[, c("q25.md8", "med.md8", "q75.md8", "max.md8", "degree")], 8)
+degdistall_md10 <- cbind(degdistall_qu_joined[, c("q25.md10", "med.md10", "q75.md10", "max.md10", "degree")], 10)
+degdistall_md15 <- cbind(degdistall_qu_joined[, c("q25.md15", "med.md15", "q75.md15", "max.md15", "degree")], 15)
+degdistall_md20 <- cbind(degdistall_qu_joined[, c("q25.md20", "med.md20", "q75.md20", "max.md20", "degree")], 20)
+
+colnames(degdistall_trax) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md2) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md5) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md8) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md10) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md15) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md20) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+
+#now rearrange to put each md long rather than tall.
+tograph <- rbind(degdistall_md2, degdistall_md5, degdistall_md8, degdistall_md10, degdistall_md15, degdistall_md20, degdistall_trax)
+
+#graph for latent factor
+ggplot(tograph, aes(x=degree, y=med, colour = fullnw_md)) +
+  geom_line(data=function(x){x[!x$fullnw_md %in% c("TRAX"), ]}) +
+  geom_bar(aes(y=med), stat = "identity", position = "identity", fill="grey70", colour = "grey70", alpha = 9/10, width = 0.25, data=function(x){x[x$fullnw_md %in% c("TRAX"), ]} )+
+  coord_cartesian(xlim=c(0, 10), ylim=c(0, 75)) +
+  scale_x_continuous(breaks=seq(0, 10, 1)) +  
+  scale_color_manual(values = c("#66c2a4", "#2ca25f", "#006d2c", "#fc8d59", "#e34a33", "#b30000", "grey20"), breaks=c("TRAX", "1", "2", "3", "4", "5", "6", "7"), label = c("TRAX", "x10, p = 0.10", "x10, p = 0.20", "x10, p = 0.30", "x20, p = 0.10", "x20, p = 0.20", "x20, p = 0.30", "x40, p = 0.10")) +
+  xlab("Degree") +
+  ylab("Median frequency") +
+  theme(legend.justification=c(1,1),legend.position=c(1,1),legend.title=element_blank(), legend.key = element_blank(), legend.text=element_text(size=16), panel.background = element_rect(fill = "white"), axis.text=element_text(size=16), axis.title=element_text(size=16))
+  #values=c("#edf8fb", "#66c2a4", "#2ca25f", "#006d2c", "#ccece6", "#99d8c9", "grey30")
+
+
+#-------------------------------------------------#
+# Figure 4 (different network sizes)
+#-------------------------------------------------#
+
+degdist <- list()
+
+degdist[[1]] <- readRDS(here("Output/nw_500_sim_1000_md_10_degdist.RDS"))
+degdist[[2]] <- readRDS(here("Output/nw_1500_sim_1000_md_10_degdist.RDS"))
+degdist[[3]] <- readRDS(here("Output/nw_2000_sim_1000_md_10_degdist.RDS"))
+degdist[[4]] <- readRDS(here("Output/nw_4000_sim_1000_md_10_degdist.RDS"))
+
+#data wrangling
+colmax <- max(as.numeric(as.character((unlist(sapply(degdist[[4]], `[[`, 1)))))) #PUT IN MAX DEGREE MODEL HERE
+df <- data.frame(matrix(ncol = (colmax + 1), nrow = nsamples))
+x <- c(0:colmax)
+colnames(df) <- x
+
+degdistall_forgraph <- list()
+
+for(k in(c(1:4))){   #CHANGE BASED ON WHERE INFO IS STORED IN DEGDIST[[]]
+  
+
+degdistall <- do.call("rbind", lapply(degdist[[k]], 
+                      function(x) x[,2][match(colnames(df), as.character((x[,1])), nomatch = NA)]) ) 
+
+x <- c(paste0("deg", 0:colmax))
+colnames(degdistall) <- x
+
+degdistall_qu <- as.data.frame(t(apply(degdistall, 2, quantile, prob = c(0.25, 0.5, 0.75, 1), na.rm=TRUE)))
+
+colnames(degdistall_qu) <- c("q25", "med", "q75", "max")
+
+degdistall_qu$degree <- c(0:(nrow(degdistall_qu)-1))
+
+degdistall_forgraph[[k]] <- degdistall_qu
+
+}
+
+colnames(degdistall_forgraph[[1]]) <- c("q25.1", "med.1", "q75.1", "max.1", "degree")
+colnames(degdistall_forgraph[[2]]) <- c("q25.2", "med.2", "q75.2", "max.2", "degree")
+colnames(degdistall_forgraph[[3]]) <- c("q25.3", "med.3", "q75.3", "max.3", "degree")
+colnames(degdistall_forgraph[[4]]) <- c("q25.4", "med.4", "q75.4", "max.4", "degree")
+
+#add in empiric trax distribution (no IQR (all zeros), median is empiric frequency, need degree column)
+trax_emp <- matrix(nrow=38, ncol=5)
+trax_emp[,1] <- rep(0)
+trax_emp[,3] <- rep(0)
+trax_emp[,2] <- table(deg_le5) #need to run code from aim1_snpdata_descriptive for this
+trax_emp[,4] <- rep(0)
+trax_emp[,5] <- as.numeric(rownames(table(deg_le5)))
+colnames(trax_emp) <- c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")
+
+degdistall_forgraph[[5]] <- as.data.frame(trax_emp)
+degdistall_qu_join1 <- full_join(degdistall_forgraph[[1]], degdistall_forgraph[[2]], by = "degree")
+degdistall_qu_join2 <- full_join(degdistall_qu_join1, degdistall_forgraph[[3]], by = "degree")
+degdistall_qu_join3 <- full_join(degdistall_qu_join2, degdistall_forgraph[[4]], by = "degree")
+degdistall_qu_joined <- full_join(degdistall_qu_join3, degdistall_forgraph[[5]], by = "degree")
+
+degdistall_trax <- cbind(degdistall_qu_joined[, c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")], "TRAX")
+degdistall_1 <- cbind(degdistall_qu_joined[, c("q25.1", "med.1", "q75.1", "max.1", "degree")], 1)
+degdistall_2 <- cbind(degdistall_qu_joined[, c("q25.2", "med.2", "q75.2", "max.2", "degree")], 2)
+degdistall_3 <- cbind(degdistall_qu_joined[, c("q25.3", "med.3", "q75.3", "max.3", "degree")], 3)
+degdistall_4 <- cbind(degdistall_qu_joined[, c("q25.4", "med.4", "q75.4", "max.4", "degree")], 4)
+
+colnames(degdistall_trax) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_1) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_2) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_3) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_4) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+
+#now rearrange to put each md long rather than tall.
+tograph <- rbind(degdistall_1, degdistall_2, degdistall_3, degdistall_4, degdistall_trax)
+
+#for 4 different nw sizes, n = 500-4000
+ggplot(tograph, aes(x=degree, y=med, colour = fullnw_md)) +
+  geom_bar(aes(y=med), stat = "identity", position = "identity", fill= "grey70", colour = "grey70", alpha = 9/10, width = 0.25, data=function(x){x[x$fullnw_md %in% c("TRAX"), ]} )+
+  geom_line(data=function(x){x[!x$fullnw_md %in% c("TRAX"), ]}) +
+  coord_cartesian(xlim=c(0, 60), ylim=c(0, 350)) +
+  scale_x_continuous(breaks=seq(0, 60, 10)) + 
+  scale_color_manual(values = c("goldenrod2","#fdbb84", "#fc8d59", "#990000", "#ef6548"), breaks=c("TRAX", "1", "2", "3", "4"), label = c("TRAX", "500 nodes", "1500 nodes", "2000 nodes", "4000 nodes")) +
+  xlab("Degree") +
+  ylab("Median frequency") +
+  theme(legend.justification=c(1,1), legend.position=c(1,1), legend.title=element_blank(), panel.background = element_rect(fill = "white"), legend.key = element_blank())
+
+
+#-------------------------------------------------#
+# Figure 5 (3 SNP threshold)
+#-------------------------------------------------#
+
+# Note that models here are the same as in Scenario 1, only the empirical distribution they will be compared to are different
+
+degdist <- list() 
+
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_degdist.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_degdist.RDS"))
+degdist[[8]] <- readRDS(here("/Output/nw_2000_sim_1000_md_8_degdist.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_degdist.RDS"))
+degdist[[15]] <- readRDS(here("/Output/nw_2000_sim_1000_md_15_degdist.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_degdist.RDS"))
+
+#data wrangling
+colmax <- max(as.numeric(as.character((unlist(sapply(degdist[[20]], `[[`, 1)))))) #PUT IN MAX DEGREE MODEL HERE
+df <- data.frame(matrix(ncol = (colmax + 1), nrow = nsamples))
+x <- c(0:colmax)
+colnames(df) <- x
+
+degdistall_forgraph <- list()
+
+for(k in(c(2, 5, 8, 10, 15, 20))){   #CHANGE BASED ON WHERE INFO IS STORED IN DEGDIST[[]]
+  
+
+degdistall <- do.call("rbind", lapply(degdist[[k]], 
+                      function(x) x[,2][match(colnames(df), as.character((x[,1])), nomatch = NA)]) ) 
+
+x <- c(paste0("deg", 0:colmax))
+colnames(degdistall) <- x
+
+degdistall_qu <- as.data.frame(t(apply(degdistall, 2, quantile, prob = c(0.25, 0.5, 0.75, 1), na.rm=TRUE)))
+
+colnames(degdistall_qu) <- c("q25", "med", "q75", "max")
+
+degdistall_qu$degree <- c(0:(nrow(degdistall_qu)-1))
+
+degdistall_forgraph[[k]] <- degdistall_qu
+
+}
+
+colnames(degdistall_forgraph[[2]]) <- c("q25.md2", "med.md2", "q75.md2", "max.md2", "degree")
+colnames(degdistall_forgraph[[5]]) <- c("q25.md5", "med.md5", "q75.md5", "max.md5", "degree")
+colnames(degdistall_forgraph[[8]]) <- c("q25.md8", "med.md8", "q75.md8", "max.md8", "degree")
+colnames(degdistall_forgraph[[10]]) <- c("q25.md10", "med.md10", "q75.md10", "max.md10", "degree")
+colnames(degdistall_forgraph[[15]]) <- c("q25.md15", "med.md15", "q75.md15", "max.md15", "degree")
+colnames(degdistall_forgraph[[20]]) <- c("q25.md20", "med.md20", "q75.md20", "max.md20", "degree")
+
+
+#3snp instead of 5snp
+trax_emp_le3 <- matrix(nrow=17, ncol=5)
+trax_emp_le3[,1] <- rep(0)
+trax_emp_le3[,3] <- rep(0)
+trax_emp_le3[,2] <- table(deg_le3) #need to run code from aim1_snpdata_descriptive for this
+trax_emp_le3[,4] <- rep(0)
+trax_emp_le3[,5] <- as.numeric(rownames(table(deg_le3)))
+colnames(trax_emp_le3) <- c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")
+
+degdistall_forgraph[[1]] <- as.data.frame(trax_emp_le3)
+degdistall_qu_join1 <- full_join(degdistall_forgraph[[2]], degdistall_forgraph[[5]], by = "degree")
+degdistall_qu_join2 <- full_join(degdistall_qu_join1, degdistall_forgraph[[8]], by = "degree")
+degdistall_qu_join3 <- full_join(degdistall_qu_join2, degdistall_forgraph[[10]], by = "degree")
+degdistall_qu_join4 <- full_join(degdistall_qu_join3, degdistall_forgraph[[15]], by = "degree")
+degdistall_qu_join5 <- full_join(degdistall_qu_join4, degdistall_forgraph[[20]], by = "degree")
+degdistall_qu_joined <- full_join(degdistall_qu_join5, degdistall_forgraph[[1]], by = "degree")
+
+degdistall_trax <- cbind(degdistall_qu_joined[, c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")], "TRAX")
+degdistall_md2 <- cbind(degdistall_qu_joined[, c("q25.md2", "med.md2", "q75.md2", "max.md2", "degree")], 2)
+degdistall_md5 <- cbind(degdistall_qu_joined[, c("q25.md5", "med.md5", "q75.md5", "max.md5", "degree")], 5)
+degdistall_md8 <- cbind(degdistall_qu_joined[, c("q25.md8", "med.md8", "q75.md8", "max.md8", "degree")], 8)
+degdistall_md10 <- cbind(degdistall_qu_joined[, c("q25.md10", "med.md10", "q75.md10", "max.md10", "degree")], 10)
+degdistall_md15 <- cbind(degdistall_qu_joined[, c("q25.md15", "med.md15", "q75.md15", "max.md15", "degree")], 15)
+degdistall_md20 <- cbind(degdistall_qu_joined[, c("q25.md20", "med.md20", "q75.md20", "max.md20", "degree")], 20)
+
+colnames(degdistall_trax) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md2) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md5) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md8) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md10) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md15) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md20) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+
+#now rearrange to put each md long rather than tall.
+tograph <- rbind(degdistall_md2, degdistall_md5, degdistall_md8, degdistall_md10, degdistall_md15, degdistall_md20, degdistall_trax)
+
+#for md2-20
+ggplot(tograph, aes(x=degree, y=med, colour = fullnw_md)) +
+  geom_line(data=function(x){x[!x$fullnw_md %in% c("TRAX"), ]}) +
+  geom_bar(aes(y=med), stat = "identity", position = "identity", fill="grey70", colour = "grey70", alpha = 6/10, width = 0.25, data=function(x){x[x$fullnw_md %in% c("TRAX"), ]} )+
+  coord_cartesian(xlim=c(0, 70), ylim=c(0, 350)) +
+  scale_x_continuous(breaks=seq(0, 70, 10)) + 
+  scale_color_manual(values=c("#41ae76", "#238b45", "#ccece6", "#005824", "#99d8c9", "#66c2a4", "grey30"), breaks=c("2", "5", "8", "10", "15", "20", "TRAX")) +
+  xlab("Degree") +
+  ylab("Median frequency") +
+  theme(legend.justification=c(1,1),legend.position=c(1,1),legend.title=element_blank(), legend.key = element_blank(), legend.text=element_text(size=16), panel.background = element_rect(fill = "white"), axis.text=element_text(size=16), axis.title=element_text(size=16))
+
+#-------------------------------------------------#
+# Supp Fig2 (high mean degrees, random sampling)
+#-------------------------------------------------#
+
+degdist <- list()
+
+degdist[[2]] <- readRDS(here("Output/nw_2000_sim_1000_md_2_degdist.RDS"))
+degdist[[5]] <- readRDS(here("Output/nw_2000_sim_1000_md_5_degdist.RDS"))
+degdist[[8]] <- readRDS(here("Output/nw_2000_sim_1000_md_8_degdist.RDS"))
+degdist[[10]] <- readRDS(here("Output/nw_2000_sim_1000_md_10_degdist.RDS"))
+degdist[[15]] <- readRDS(here("Output/nw_2000_sim_1000_md_15_degdist.RDS"))
+degdist[[20]] <- readRDS(here("Output/nw_2000_sim_1000_md_20_degdist.RDS"))
+degdist[[50]] <- readRDS(here("Output/nw_2000_sim_1000_md_50_degdist.RDS"))
+degdist[[100]] <- readRDS(here("Output/nw_2000_sim_1000_md_100_degdist.RDS"))
+
+#data wrangling
+colmax <- max(as.numeric(as.character((unlist(sapply(degdist[[100]], `[[`, 1)))))) #PUT IN MAX DEGREE MODEL HERE
+df <- data.frame(matrix(ncol = (colmax + 1), nrow = nsamples))
+x <- c(0:colmax)
+colnames(df) <- x
+
+degdistall_forgraph <- list()
+
+for(k in(c(2, 5, 8, 10, 15, 20, 50, 100))){   #CHANGE BASED ON WHERE INFO IS STORED IN DEGDIST[[]]
+  
+
+degdistall <- do.call("rbind", lapply(degdist[[k]], 
+                      function(x) x[,2][match(colnames(df), as.character((x[,1])), nomatch = NA)]) ) 
+
+x <- c(paste0("deg", 0:colmax))
+colnames(degdistall) <- x
+
+degdistall_qu <- as.data.frame(t(apply(degdistall, 2, quantile, prob = c(0.25, 0.5, 0.75, 1), na.rm=TRUE)))
+
+colnames(degdistall_qu) <- c("q25", "med", "q75", "max")
+
+degdistall_qu$degree <- c(0:(nrow(degdistall_qu)-1))
+
+degdistall_forgraph[[k]] <- degdistall_qu
+
+}
+
+colnames(degdistall_forgraph[[2]]) <- c("q25.md2", "med.md2", "q75.md2", "max.md2", "degree")
+colnames(degdistall_forgraph[[5]]) <- c("q25.md5", "med.md5", "q75.md5", "max.md5", "degree")
+colnames(degdistall_forgraph[[8]]) <- c("q25.md8", "med.md8", "q75.md8", "max.md8", "degree")
+colnames(degdistall_forgraph[[10]]) <- c("q25.md10", "med.md10", "q75.md10", "max.md10", "degree")
+colnames(degdistall_forgraph[[15]]) <- c("q25.md15", "med.md15", "q75.md15", "max.md15", "degree")
+colnames(degdistall_forgraph[[20]]) <- c("q25.md20", "med.md20", "q75.md20", "max.md20", "degree")
+colnames(degdistall_forgraph[[50]]) <- c("q25.md50", "med.md50", "q75.md50", "max.md50", "degree")
+colnames(degdistall_forgraph[[100]]) <- c("q25.md100", "med.md100", "q75.md100", "max.md100", "degree")
+
+# read in empiric trax distribution (no IQR (all zeros), 'median' is empiric frequency, need degree column)
+trax_emp <- matrix(nrow=38, ncol=5)
+trax_emp[,1] <- rep(0)
+trax_emp[,3] <- rep(0)
+trax_emp[,2] <- table(deg_le5) #need to run code from aim1_snpdata_descriptive for this
+trax_emp[,4] <- rep(0)
+trax_emp[,5] <- as.numeric(rownames(table(deg_le5)))
+colnames(trax_emp) <- c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")
+
+degdistall_forgraph[[1]] <- as.data.frame(trax_emp)
+degdistall_qu_join1 <- full_join(degdistall_forgraph[[2]], degdistall_forgraph[[5]], by = "degree")
+degdistall_qu_join2 <- full_join(degdistall_qu_join1, degdistall_forgraph[[8]], by = "degree")
+degdistall_qu_join3 <- full_join(degdistall_qu_join2, degdistall_forgraph[[10]], by = "degree")
+degdistall_qu_join4 <- full_join(degdistall_qu_join3, degdistall_forgraph[[15]], by = "degree")
+degdistall_qu_join5 <- full_join(degdistall_qu_join4, degdistall_forgraph[[20]], by = "degree")
+degdistall_qu_join6 <- full_join(degdistall_qu_join5, degdistall_forgraph[[50]], by = "degree")
+degdistall_qu_join7 <- full_join(degdistall_qu_join6, degdistall_forgraph[[100]], by = "degree")
+degdistall_qu_joined <- full_join(degdistall_qu_join7, degdistall_forgraph[[1]], by = "degree")
+
+degdistall_trax <- cbind(degdistall_qu_joined[, c("q25.trax", "med.trax", "q75.trax", "max.trax", "degree")], "TRAX")
+degdistall_md2 <- cbind(degdistall_qu_joined[, c("q25.md2", "med.md2", "q75.md2", "max.md2", "degree")], 2)
+degdistall_md5 <- cbind(degdistall_qu_joined[, c("q25.md5", "med.md5", "q75.md5", "max.md5", "degree")], 5)
+degdistall_md8 <- cbind(degdistall_qu_joined[, c("q25.md8", "med.md8", "q75.md8", "max.md8", "degree")], 8)
+degdistall_md10 <- cbind(degdistall_qu_joined[, c("q25.md10", "med.md10", "q75.md10", "max.md10", "degree")], 10)
+degdistall_md15 <- cbind(degdistall_qu_joined[, c("q25.md15", "med.md15", "q75.md15", "max.md15", "degree")], 15)
+degdistall_md20 <- cbind(degdistall_qu_joined[, c("q25.md20", "med.md20", "q75.md20", "max.md20", "degree")], 20)
+degdistall_md50 <- cbind(degdistall_qu_joined[, c("q25.md50", "med.md50", "q75.md50", "max.md50", "degree")], 50)
+degdistall_md100 <- cbind(degdistall_qu_joined[, c("q25.md100", "med.md100", "q75.md100", "max.md100", "degree")], 100)
+
+colnames(degdistall_trax) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md2) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md5) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md8) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md10) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md15) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md20) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md50) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md100) <- c("q25", "med", "q75", "max", "degree", "fullnw_md")
+
+tograph <- rbind(degdistall_md2, degdistall_md5, degdistall_md8, degdistall_md10, degdistall_md15, degdistall_md20, degdistall_md50, degdistall_md100, degdistall_trax)
+
+#for md2-100
+ggplot(tograph, aes(x=degree, y=med, colour = fullnw_md)) +
+  geom_line(data=function(x){x[!x$fullnw_md %in% c("TRAX"), ]}) +
+  geom_bar(aes(y=med), stat = "identity", position = "identity", fill="grey70", colour = "grey70", alpha = 9/10, width = 0.25, data=function(x){x[x$fullnw_md %in% c("TRAX"), ]} )+
+  coord_cartesian(xlim=c(0, 60), ylim=c(0, 300)) +
+  scale_x_continuous(breaks=seq(0, 60, 10)) + 
+  scale_color_manual(values=c("#41ae76", "grey5", "#238b45", "#ccece6", "grey60", "#99d8c9", "grey30", "#66c2a4"), breaks=c("2","5","8", "10", "15", "20", "50", "100",  "TRAX")) +
+  xlab("Degree") +
+  ylab("Median frequency") +
+  theme(legend.justification=c(1,1), legend.position=c(1,1), legend.title=element_blank(), panel.background = element_rect(fill = "white"), legend.key = element_blank())
+
+
+```
+
+
+
+
+```{r}
+
+#-------------------------------------------------#
+# Figure 2B
+#-------------------------------------------------#
+
+# Scenario 1
+
+degdist <- list()
+
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_degdist.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_degdist.RDS"))
+degdist[[8]] <- readRDS(here("/Output/nw_2000_sim_1000_md_8_degdist.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_degdist.RDS"))
+degdist[[15]] <- readRDS(here("/Output/nw_2000_sim_1000_md_15_degdist.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_degdist.RDS"))
+
+#data wrangling
+colmax <- max(as.numeric(as.character((unlist(sapply(degdist[[20]], `[[`, 1)))))) #PUT IN MAX DEGREE MODEL HERE
+df <- data.frame(matrix(ncol = (colmax + 1), nrow = nsamples))
+x <- c(0:colmax)
+colnames(df) <- x
+
+degdistall_forgraph <- list()
+
+for(k in(c(2, 5, 8, 10, 15, 20))){   #CHANGE BASED ON WHERE INFO IS STORED IN DEGDIST[[]]
+  
+#degdist_md2[[1]][ ,2][match(colnames(df), as.character((degdist_md2[[1]][ ,1])), nomatch = NA)] #this works!
+
+degdistall <- do.call("rbind", lapply(degdist[[k]], 
+                      function(x) x[,2][match(colnames(df), as.character((x[,1])), nomatch = NA)]) ) 
+
+x <- c(paste0("deg", 0:colmax))
+colnames(degdistall) <- x
+
+degdistall_qu <- as.data.frame(t(apply(degdistall, 2, quantile, prob = c(0, 0.25, 0.5, 0.75, 1), na.rm=TRUE)))
+
+colnames(degdistall_qu) <- c("min", "q25", "med", "q75", "max")
+
+degdistall_qu$degree <- c(0:(nrow(degdistall_qu)-1))
+
+degdistall_forgraph[[k]] <- degdistall_qu
+
+}
+
+colnames(degdistall_forgraph[[2]]) <- c("min.md2", "q25.md2", "med.md2", "q75.md2", "max.md2", "degree")
+colnames(degdistall_forgraph[[5]]) <- c("min.md5", "q25.md5", "med.md5", "q75.md5", "max.md5", "degree")
+colnames(degdistall_forgraph[[8]]) <- c("min.md8", "q25.md8", "med.md8", "q75.md8", "max.md8", "degree")
+colnames(degdistall_forgraph[[10]]) <- c("min.md10", "q25.md10", "med.md10", "q75.md10", "max.md10", "degree")
+colnames(degdistall_forgraph[[15]]) <- c("min.md15", "q25.md15", "med.md15", "q75.md15", "max.md15", "degree")
+colnames(degdistall_forgraph[[20]]) <- c("min.md20", "q25.md20", "med.md20", "q75.md20", "max.md20", "degree")
+
+trax_emp <- matrix(nrow=38, ncol=6)
+trax_emp[,1] <- rep(NA)
+trax_emp[,2] <- rep(NA)
+trax_emp[,3] <- table(deg_le5) #need to run code from aim1_snpdata_descriptive for this
+trax_emp[,4] <- rep(NA)
+trax_emp[,5] <- rep(NA)
+trax_emp[,6] <- as.numeric(rownames(table(deg_le5)))
+colnames(trax_emp) <- c("min.trax", "q25.trax", "med.trax", "q75.trax", "max.trax", "degree")
+
+
+degdistall_forgraph[[1]] <- as.data.frame(trax_emp_le3)
+degdistall_qu_join1 <- full_join(degdistall_forgraph[[2]], degdistall_forgraph[[5]], by = "degree")
+degdistall_qu_join2 <- full_join(degdistall_qu_join1, degdistall_forgraph[[8]], by = "degree")
+degdistall_qu_join3 <- full_join(degdistall_qu_join2, degdistall_forgraph[[10]], by = "degree")
+degdistall_qu_join4 <- full_join(degdistall_qu_join3, degdistall_forgraph[[15]], by = "degree")
+degdistall_qu_join5 <- full_join(degdistall_qu_join4, degdistall_forgraph[[20]], by = "degree")
+degdistall_qu_joined <- full_join(degdistall_qu_join5, degdistall_forgraph[[1]], by = "degree")
+
+degdistall_trax <- cbind(degdistall_qu_joined[, c("min.trax", "q25.trax", "med.trax", "q75.trax", "max.trax", "degree")], "TRAX")
+degdistall_md2 <- cbind(degdistall_qu_joined[, c("min.md2", "q25.md2", "med.md2", "q75.md2", "max.md2", "degree")], 2)
+degdistall_md5 <- cbind(degdistall_qu_joined[, c("min.md5", "q25.md5", "med.md5", "q75.md5", "max.md5", "degree")], 5)
+degdistall_md8 <- cbind(degdistall_qu_joined[, c("min.md8", "q25.md8", "med.md8", "q75.md8", "max.md8", "degree")], 8)
+degdistall_md10 <- cbind(degdistall_qu_joined[, c("min.md10", "q25.md10", "med.md10", "q75.md10", "max.md10", "degree")], 10)
+degdistall_md15 <- cbind(degdistall_qu_joined[, c("min.md15", "q25.md15", "med.md15", "q75.md15", "max.md15", "degree")], 15)
+degdistall_md20 <- cbind(degdistall_qu_joined[, c("min.md20", "q25.md20", "med.md20", "q75.md20", "max.md20", "degree")], 20)
+
+colnames(degdistall_trax) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md2) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md5) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md8) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md10) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md15) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md20) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+ 
+#now rearrange to put each md long rather than tall.
+tograph <- rbind(degdistall_md2, degdistall_md5, degdistall_md8, degdistall_md10, degdistall_md15, degdistall_md20, degdistall_trax)
+
+#for md10 only, with boxplots showing spread
+ggplot(tograph, aes(x=degree, y=med, colour = fullnw_md)) +
+  geom_point(aes(y = med), stat = "identity", fill="grey40", colour = "grey40", data=function(x){x[x$fullnw_md %in% c("TRAX"), ]}) +
+  geom_boxplot(aes(ymin = min, lower = q25, middle = med, upper = q75, ymax = max), alpha = 0, stat = "identity", data=function(x){x[x$fullnw_md %in% c("10"), ]}) +
+  scale_color_manual(values=c("#41ae76", "grey30"), breaks=c("10", "TRAX")) +
+  coord_cartesian(xlim=c(0, 70), ylim=c(0, 250)) +
+  scale_x_continuous(breaks=seq(0, 70, 10)) + 
+  xlab("Degree") +
+  ylab("Median frequency") +
+  theme(legend.justification=c(1,1),legend.position=c(1,1),legend.title=element_blank(), legend.text=element_text(size=16), panel.background = element_rect(fill = "white"), axis.text=element_text(size=16), axis.title=element_text(size=16))
+
+
+
+
+# Scenario 2
+
+degdist <- list()
+
+# LOAD EITHER SCENARIO 2A or SCENARIO 2B NETWORKS
+
+# Oversampling high-transmitters (scenario 2a)
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_2_degdist.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_5_degdist.RDS"))
+degdist[[8]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_8_degdist.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_10_degdist.RDS"))
+degdist[[15]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_15_degdist.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_deg_md_20_degdist.RDS"))
+
+# Oversampling low-transmitters (scenario 2b)
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_2_degdist.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_5_degdist.RDS"))
+degdist[[8]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_8_degdist.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_10_degdist.RDS"))
+degdist[[15]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_15_degdist.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_nonran_md_20_degdist.RDS"))
+
+
+#data wrangling
+colmax <- max(as.numeric(as.character((unlist(sapply(degdist[[20]], `[[`, 1)))))) #PUT IN MAX DEGREE MODEL HERE
+df <- data.frame(matrix(ncol = (colmax + 1), nrow = nsamples))
+x <- c(0:colmax)
+colnames(df) <- x
+
+degdistall_forgraph <- list()
+
+for(k in(c(2, 5, 8, 10, 15, 20))){   #CHANGE BASED ON WHERE INFO IS STORED IN DEGDIST[[]]
+  
+#degdist_md2[[1]][ ,2][match(colnames(df), as.character((degdist_md2[[1]][ ,1])), nomatch = NA)] #this works!
+
+degdistall <- do.call("rbind", lapply(degdist[[k]], 
+                      function(x) x[,2][match(colnames(df), as.character((x[,1])), nomatch = NA)]) ) 
+
+x <- c(paste0("deg", 0:colmax))
+colnames(degdistall) <- x
+
+degdistall_qu <- as.data.frame(t(apply(degdistall, 2, quantile, prob = c(0, 0.25, 0.5, 0.75, 1), na.rm=TRUE)))
+
+colnames(degdistall_qu) <- c("min", "q25", "med", "q75", "max")
+
+degdistall_qu$degree <- c(0:(nrow(degdistall_qu)-1))
+
+degdistall_forgraph[[k]] <- degdistall_qu
+
+}
+
+colnames(degdistall_forgraph[[2]]) <- c("min.md2", "q25.md2", "med.md2", "q75.md2", "max.md2", "degree")
+colnames(degdistall_forgraph[[5]]) <- c("min.md5", "q25.md5", "med.md5", "q75.md5", "max.md5", "degree")
+colnames(degdistall_forgraph[[8]]) <- c("min.md8", "q25.md8", "med.md8", "q75.md8", "max.md8", "degree")
+colnames(degdistall_forgraph[[10]]) <- c("min.md10", "q25.md10", "med.md10", "q75.md10", "max.md10", "degree")
+colnames(degdistall_forgraph[[15]]) <- c("min.md15", "q25.md15", "med.md15", "q75.md15", "max.md15", "degree")
+colnames(degdistall_forgraph[[20]]) <- c("min.md20", "q25.md20", "med.md20", "q75.md20", "max.md20", "degree")
+
+trax_emp <- matrix(nrow=38, ncol=6)
+trax_emp[,1] <- rep(NA)
+trax_emp[,2] <- rep(NA)
+trax_emp[,3] <- table(deg_le5) #need to run code from aim1_snpdata_descriptive for this
+trax_emp[,4] <- rep(NA)
+trax_emp[,5] <- rep(NA)
+trax_emp[,6] <- as.numeric(rownames(table(deg_le5)))
+colnames(trax_emp) <- c("min.trax", "q25.trax", "med.trax", "q75.trax", "max.trax", "degree")
+
+degdistall_forgraph[[1]] <- as.data.frame(trax_emp_le3)
+degdistall_qu_join1 <- full_join(degdistall_forgraph[[2]], degdistall_forgraph[[5]], by = "degree")
+degdistall_qu_join2 <- full_join(degdistall_qu_join1, degdistall_forgraph[[8]], by = "degree")
+degdistall_qu_join3 <- full_join(degdistall_qu_join2, degdistall_forgraph[[10]], by = "degree")
+degdistall_qu_join4 <- full_join(degdistall_qu_join3, degdistall_forgraph[[15]], by = "degree")
+degdistall_qu_join5 <- full_join(degdistall_qu_join4, degdistall_forgraph[[20]], by = "degree")
+degdistall_qu_joined <- full_join(degdistall_qu_join5, degdistall_forgraph[[1]], by = "degree")
+
+degdistall_trax <- cbind(degdistall_qu_joined[, c("min.trax", "q25.trax", "med.trax", "q75.trax", "max.trax", "degree")], "TRAX")
+degdistall_md2 <- cbind(degdistall_qu_joined[, c("min.md2", "q25.md2", "med.md2", "q75.md2", "max.md2", "degree")], 2)
+degdistall_md5 <- cbind(degdistall_qu_joined[, c("min.md5", "q25.md5", "med.md5", "q75.md5", "max.md5", "degree")], 5)
+degdistall_md8 <- cbind(degdistall_qu_joined[, c("min.md8", "q25.md8", "med.md8", "q75.md8", "max.md8", "degree")], 8)
+degdistall_md10 <- cbind(degdistall_qu_joined[, c("min.md10", "q25.md10", "med.md10", "q75.md10", "max.md10", "degree")], 10)
+degdistall_md15 <- cbind(degdistall_qu_joined[, c("min.md15", "q25.md15", "med.md15", "q75.md15", "max.md15", "degree")], 15)
+degdistall_md20 <- cbind(degdistall_qu_joined[, c("min.md20", "q25.md20", "med.md20", "q75.md20", "max.md20", "degree")], 20)
+
+colnames(degdistall_trax) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md2) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md5) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md8) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md10) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md15) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md20) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+
+#now rearrange to put each md long rather than tall.
+tograph <- rbind(degdistall_md2, degdistall_md5, degdistall_md8, degdistall_md10, degdistall_md15, degdistall_md20, degdistall_trax)
+
+#for md10 only, with boxplots showing spread
+ggplot(tograph, aes(x=degree, y=med, colour = fullnw_md)) +
+  geom_point(aes(y = med), stat = "identity", fill="grey40", colour = "grey40", data=function(x){x[x$fullnw_md %in% c("TRAX"), ]}) +
+  geom_boxplot(aes(ymin = min, lower = q25, middle = med, upper = q75, ymax = max), alpha = 0, stat = "identity", data=function(x){x[x$fullnw_md %in% c("10"), ]}) +
+  scale_color_manual(values=c("#41ae76", "grey30"), breaks=c("10", "TRAX")) +
+  coord_cartesian(xlim=c(0, 70), ylim=c(0, 250)) +
+  scale_x_continuous(breaks=seq(0, 70, 10)) + 
+  xlab("Degree") +
+  ylab("Median frequency") +
+  theme(legend.justification=c(1,1),legend.position=c(1,1),legend.title=element_blank(), legend.text=element_text(size=16), panel.background = element_rect(fill = "white"), axis.text=element_text(size=16), axis.title=element_text(size=16))
+
+
+
+#-------------------------------------------------#
+# Figure 3B
+#-------------------------------------------------#
+
+# Scenario 3
+
+degdist <- list()
+
+#different smear proportions, all with mean degree of 10
+degdist[[1]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_c1_degdist.RDS"))
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_c2_degdist.RDS"))
+degdist[[3]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_c3_degdist.RDS"))
+degdist[[4]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_c4_degdist.RDS"))
+
+#data wrangling
+colmax <- max(as.numeric(as.character((unlist(sapply(degdist[[1]], `[[`, 1)))))) #PUT IN MAX DEGREE MODEL HERE
+df <- data.frame(matrix(ncol = (colmax + 1), nrow = nsamples))
+x <- c(0:colmax)
+colnames(df) <- x
+
+degdistall_forgraph <- list()
+
+for(k in(c(1:4))){   #CHANGE BASED ON WHERE INFO IS STORED IN DEGDIST[[]]
+  
+#degdist_md2[[1]][ ,2][match(colnames(df), as.character((degdist_md2[[1]][ ,1])), nomatch = NA)] #this works!
+
+degdistall <- do.call("rbind", lapply(degdist[[k]], 
+                      function(x) x[,2][match(colnames(df), as.character((x[,1])), nomatch = NA)]) ) 
+
+x <- c(paste0("deg", 0:colmax))
+colnames(degdistall) <- x
+
+degdistall_qu <- as.data.frame(t(apply(degdistall, 2, quantile, prob = c(0, 0.25, 0.5, 0.75, 1), na.rm=TRUE)))
+
+colnames(degdistall_qu) <- c("min", "q25", "med", "q75", "max")
+
+degdistall_qu$degree <- c(0:(nrow(degdistall_qu)-1))
+
+degdistall_forgraph[[k]] <- degdistall_qu
+
+}
+
+colnames(degdistall_forgraph[[1]]) <- c("min.1", "q25.1", "med.1", "q75.1", "max.1", "degree")
+colnames(degdistall_forgraph[[2]]) <- c("min.2", "q25.2", "med.2", "q75.2", "max.2", "degree")
+colnames(degdistall_forgraph[[3]]) <- c("min.3", "q25.3", "med.3", "q75.3", "max.3", "degree")
+colnames(degdistall_forgraph[[4]]) <- c("min.4", "q25.4", "med.4", "q75.4", "max.4", "degree")
+
+trax_emp <- matrix(nrow=38, ncol=6)
+trax_emp[,1] <- rep(NA)
+trax_emp[,2] <- rep(NA)
+trax_emp[,3] <- table(deg_le5) #need to run code from aim1_snpdata_descriptive for this
+trax_emp[,4] <- rep(NA)
+trax_emp[,5] <- rep(NA)
+trax_emp[,6] <- as.numeric(rownames(table(deg_le5)))
+colnames(trax_emp) <- c("min.trax", "q25.trax", "med.trax", "q75.trax", "max.trax", "degree")
+
+degdistall_forgraph[[5]] <- as.data.frame(trax_emp)
+degdistall_qu_join1 <- full_join(degdistall_forgraph[[1]], degdistall_forgraph[[2]], by = "degree")
+degdistall_qu_join2 <- full_join(degdistall_qu_join1, degdistall_forgraph[[3]], by = "degree")
+degdistall_qu_join3 <- full_join(degdistall_qu_join2, degdistall_forgraph[[4]], by = "degree")
+degdistall_qu_joined <- full_join(degdistall_qu_join3, degdistall_forgraph[[5]], by = "degree")
+
+degdistall_trax <- cbind(degdistall_qu_joined[, c("min.trax", "q25.trax", "med.trax", "q75.trax", "max.trax", "degree")], "TRAX")
+degdistall_1 <- cbind(degdistall_qu_joined[, c("min.1", "q25.1", "med.1", "q75.1", "max.1", "degree")], 1)
+degdistall_2 <- cbind(degdistall_qu_joined[, c("min.2", "q25.2", "med.2", "q75.2", "max.2", "degree")], 2)
+degdistall_3 <- cbind(degdistall_qu_joined[, c("min.3", "q25.3", "med.3", "q75.3", "max.3", "degree")], 3)
+degdistall_4 <- cbind(degdistall_qu_joined[, c("min.4", "q25.4", "med.4", "q75.4", "max.4", "degree")], 4)
+
+colnames(degdistall_trax) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_1) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_2) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_3) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_4) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+
+#now rearrange to put each md long rather than tall.
+tograph <- rbind(degdistall_md2, degdistall_md5, degdistall_md8, degdistall_md10, degdistall_md15, degdistall_md20, degdistall_trax)
+
+#for 70/30 sm-/+ only
+ggplot(tograph, aes(x=degree, y=med, colour = fullnw_md)) +
+  geom_point(aes(y = med), stat = "identity", fill="grey40", colour = "grey40", data=function(x){x[x$fullnw_md %in% c("TRAX"), ]}) +
+  geom_boxplot(aes(ymin = min, lower = q25, middle = med, upper = q75, ymax = max), alpha = 0, stat = "identity", data=function(x){x[x$fullnw_md %in% c("2"), ]}) +
+  coord_cartesian(xlim=c(0, 70), ylim=c(0, 250)) +
+  scale_x_continuous(breaks=seq(0, 70, 10)) + 
+  scale_color_manual(values = c("#990000", "#ef6548"), breaks=c("TRAX", "2"), label = c("23% smear-negative (TRAX)", "70% smear-negative")) +
+  xlab("Degree") +
+  ylab("Median frequency") +
+  theme(legend.justification=c(1,1),legend.position=c(1,1),legend.title=element_blank(), legend.text=element_text(size=16), panel.background = element_rect(fill = "white"), axis.text=element_text(size=16), axis.title=element_text(size=16))
+
+
+
+
+# Scenario 4
+
+degdist <- list()
+
+degdist[[2]] <- readRDS(here("/Output/nw_2000_sim_1000_md_2_lf40in10_degdist.RDS"))
+degdist[[5]] <- readRDS(here("/Output/nw_2000_sim_1000_md_5_lf40in10_degdist.RDS"))
+degdist[[8]] <- readRDS(here("/Output/nw_2000_sim_1000_md_8_lf40in10_degdist.RDS"))
+degdist[[10]] <- readRDS(here("/Output/nw_2000_sim_1000_md_10_lf40in10_degdist.RDS"))
+degdist[[15]] <- readRDS(here("/Output/nw_2000_sim_1000_md_15_lf40in10_degdist.RDS"))
+degdist[[20]] <- readRDS(here("/Output/nw_2000_sim_1000_md_20_lf40in10_degdist.RDS"))
+
+
+#data wrangling
+colmax <- max(as.numeric(as.character((unlist(sapply(degdist[[20]], `[[`, 1)))))) #PUT IN MAX DEGREE MODEL HERE
+df <- data.frame(matrix(ncol = (colmax + 1), nrow = nsamples))
+x <- c(0:colmax)
+colnames(df) <- x
+
+degdistall_forgraph <- list()
+
+for(k in(c(2, 5, 8, 10, 15, 20))){   #CHANGE BASED ON WHERE INFO IS STORED IN DEGDIST[[]]
+  
+#degdist_md2[[1]][ ,2][match(colnames(df), as.character((degdist_md2[[1]][ ,1])), nomatch = NA)] #this works!
+
+degdistall <- do.call("rbind", lapply(degdist[[k]], 
+                      function(x) x[,2][match(colnames(df), as.character((x[,1])), nomatch = NA)]) ) 
+
+x <- c(paste0("deg", 0:colmax))
+colnames(degdistall) <- x
+
+degdistall_qu <- as.data.frame(t(apply(degdistall, 2, quantile, prob = c(0, 0.25, 0.5, 0.75, 1), na.rm=TRUE)))
+
+colnames(degdistall_qu) <- c("min", "q25", "med", "q75", "max")
+
+degdistall_qu$degree <- c(0:(nrow(degdistall_qu)-1))
+
+degdistall_forgraph[[k]] <- degdistall_qu
+
+}
+
+colnames(degdistall_forgraph[[2]]) <- c("min.md2", "q25.md2", "med.md2", "q75.md2", "max.md2", "degree")
+colnames(degdistall_forgraph[[5]]) <- c("min.md5", "q25.md5", "med.md5", "q75.md5", "max.md5", "degree")
+colnames(degdistall_forgraph[[8]]) <- c("min.md8", "q25.md8", "med.md8", "q75.md8", "max.md8", "degree")
+colnames(degdistall_forgraph[[10]]) <- c("min.md10", "q25.md10", "med.md10", "q75.md10", "max.md10", "degree")
+colnames(degdistall_forgraph[[15]]) <- c("min.md15", "q25.md15", "med.md15", "q75.md15", "max.md15", "degree")
+colnames(degdistall_forgraph[[20]]) <- c("min.md20", "q25.md20", "med.md20", "q75.md20", "max.md20", "degree")
+
+trax_emp <- matrix(nrow=38, ncol=6)
+trax_emp[,1] <- rep(NA)
+trax_emp[,2] <- rep(NA)
+trax_emp[,3] <- table(deg_le5) #need to run code from aim1_snpdata_descriptive for this
+trax_emp[,4] <- rep(NA)
+trax_emp[,5] <- rep(NA)
+trax_emp[,6] <- as.numeric(rownames(table(deg_le5)))
+colnames(trax_emp) <- c("min.trax", "q25.trax", "med.trax", "q75.trax", "max.trax", "degree")
+
+degdistall_forgraph[[1]] <- as.data.frame(trax_emp_le3)
+degdistall_qu_join1 <- full_join(degdistall_forgraph[[2]], degdistall_forgraph[[5]], by = "degree")
+degdistall_qu_join2 <- full_join(degdistall_qu_join1, degdistall_forgraph[[8]], by = "degree")
+degdistall_qu_join3 <- full_join(degdistall_qu_join2, degdistall_forgraph[[10]], by = "degree")
+degdistall_qu_join4 <- full_join(degdistall_qu_join3, degdistall_forgraph[[15]], by = "degree")
+degdistall_qu_join5 <- full_join(degdistall_qu_join4, degdistall_forgraph[[20]], by = "degree")
+degdistall_qu_joined <- full_join(degdistall_qu_join5, degdistall_forgraph[[1]], by = "degree")
+
+degdistall_trax <- cbind(degdistall_qu_joined[, c("min.trax", "q25.trax", "med.trax", "q75.trax", "max.trax", "degree")], "TRAX")
+degdistall_md2 <- cbind(degdistall_qu_joined[, c("min.md2", "q25.md2", "med.md2", "q75.md2", "max.md2", "degree")], 2)
+degdistall_md5 <- cbind(degdistall_qu_joined[, c("min.md5", "q25.md5", "med.md5", "q75.md5", "max.md5", "degree")], 5)
+degdistall_md8 <- cbind(degdistall_qu_joined[, c("min.md8", "q25.md8", "med.md8", "q75.md8", "max.md8", "degree")], 8)
+degdistall_md10 <- cbind(degdistall_qu_joined[, c("min.md10", "q25.md10", "med.md10", "q75.md10", "max.md10", "degree")], 10)
+degdistall_md15 <- cbind(degdistall_qu_joined[, c("min.md15", "q25.md15", "med.md15", "q75.md15", "max.md15", "degree")], 15)
+degdistall_md20 <- cbind(degdistall_qu_joined[, c("min.md20", "q25.md20", "med.md20", "q75.md20", "max.md20", "degree")], 20)
+
+colnames(degdistall_trax) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md2) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md5) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md8) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md10) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md15) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+colnames(degdistall_md20) <- c("min", "q25", "med", "q75", "max", "degree", "fullnw_md")
+
+#now rearrange to put each md long rather than tall.
+tograph <- rbind(degdistall_md2, degdistall_md5, degdistall_md8, degdistall_md10, degdistall_md15, degdistall_md20, degdistall_trax)
+
+#for latent factor - lf40in10
+ggplot(tograph, aes(x=degree, y=med, colour = fullnw_md)) +
+  geom_point(aes(y = med), stat = "identity", fill="grey40", colour = "grey40", data=function(x){x[x$fullnw_md %in% c("TRAX"), ]}) +
+  geom_boxplot(aes(ymin = min, lower = q25, middle = med, upper = q75, ymax = max), alpha = 0, stat = "identity", data=function(x){x[x$fullnw_md %in% c("7"), ]}) +
+  coord_cartesian(xlim=c(0, 70), ylim=c(0, 250)) +
+  scale_x_continuous(breaks=seq(0, 70, 10)) + 
+  scale_color_manual(values = c("#990000", "#ef6548"), breaks=c("7", "TRAX"), label = c("x40, p = 0.10", "TRAX")) +
+  xlab("Degree") +
+  ylab("Median frequency") +
+  theme(legend.justification=c(1,1),legend.position=c(1,1),legend.title=element_blank(), legend.text=element_text(size=16), panel.background = element_rect(fill = "white"), axis.text=element_text(size=16), axis.title=element_text(size=16))
+
+```
+
+To statistically compare the degree distributions of the modeled and empirical networks, we used a modified Kolmogorov-Smirnov (K-S) test statistic calculated by bootstrapping techniques using the ks.boot function (in the Matching package) in R. We considered a two-sided alternative hypothesis and used 1000 bootstraps to calculate p-values. 15{Janssen, 1994 #935}
+
+We calculated a p-value comparing each of 1000 simulated networks against the empirical network, creating a distribution of K-S p-values. We report the median p-value from this distribution in Tables 2 and 3.
+
+```{r}
+
+
+# K-S p-values for all models
+
+# NEED TO LOAD DEG_LE5 and DEG_LE3 VECTORS 
+
+# Random sampling - scenario 1
+nw_md <- list()
+nw_md[[2]] <- readRDS(here("/Output/nw_2000_md_2_.RDS"))
+nw_md[[5]] <- readRDS(here("/Output/nw_2000_md_5_.RDS"))
+nw_md[[8]] <- readRDS(here("/Output/nw_2000_md_8_.RDS"))
+nw_md[[10]] <- readRDS(here("/Output/nw_2000_md_10_.RDS"))
+nw_md[[15]] <- readRDS(here("/Output/nw_2000_md_15_.RDS"))
+nw_md[[20]] <- readRDS(here("/Output/nw_2000_md_20_.RDS"))
+
+# AIC/BIC
+summary(nw_md[[2]])
+summary(nw_md[[5]])
+summary(nw_md[[8]])
+summary(nw_md[[10]])
+summary(nw_md[[15]])
+summary(nw_md[[20]])
+
+# GOF p-values by degree
+gof.md2 <- gof(nw_md[[2]])
+gof.md5 <- gof(nw_md[[5]])
+gof.md8 <- gof(nw_md[[8]])
+gof.md10 <- gof(nw_md[[10]])
+gof.md15 <- gof(nw_md[[15]])
+gof.md20 <- gof(nw_md[[20]])
+
+# K-S test for comparison to empirical network (p-value, null hypothesis is two are drawn from same underlying dstn)
+
+ks.all.2 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[2]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.2[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.2 <- unlist(ks.all.2)
+saveRDS(ks.all.2, file = "ks.pvals.all.md2.RDS")
+
+
+
+
+ks.all.5 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[5]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.5[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.5 <- unlist(ks.all.5)
+saveRDS(ks.all.5, file = "ks.pvals.all.md5.RDS")
+
+
+ks.all.10 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[10]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.10[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.10 <- unlist(ks.all.10)
+saveRDS(ks.all.10, file = "ks.pvals.all.md10.RDS")
+
+
+ks.all.20 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[20]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.20[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.20 <- unlist(ks.all.20)
+saveRDS(ks.all.20, file = "ks.pvals.all.md20.RDS")
+
+
+
+# Oversampling high-transmitters - scenario 2a
+
+ks.all.2.overhigh <- list()
+
+for(i in(1:1000)){
+  
+      nw_sim <- simulate(nw_md[[2]], nsim = 1, monitor = ~ degree(0:100) + meandeg)
+  
+      degtosamp <- degree(nw_sim, gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+      
+      degtable <- as.data.frame(cbind(degtosamp, 1:n_sim))
+      
+      nonransamp <- sample_n(degtable, 350, replace = FALSE, weight = (degtosamp + 0.1)) 
+      
+      nonransamp <- nonransamp[,2]
+
+  ks <- ks.boot(degree(get.inducedSubgraph(nw_sim, nonransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.2.overhigh[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.2.overhigh <- unlist(ks.all.2.overhigh)
+saveRDS(ks.all.2.overhigh, file = "ks.pvals.all.md2.overhigh.RDS")
+
+ks.all.5.overhigh <- list()
+
+for(i in(1:1000)){
+  
+      nw_sim <- simulate(nw_md[[5]], nsim = 1, monitor = ~ degree(0:100) + meandeg)
+  
+      degtosamp <- degree(nw_sim, gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+      
+      degtable <- as.data.frame(cbind(degtosamp, 1:n_sim))
+      
+      nonransamp <- sample_n(degtable, 350, replace = FALSE, weight = (degtosamp + 0.1)) 
+      
+      nonransamp <- nonransamp[,2]
+
+  ks <- ks.boot(degree(get.inducedSubgraph(nw_sim, nonransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.5.overhigh[i] <- ks$ks.boot.pvalue
+
+}
+ks.all.5.overhigh <- unlist(ks.all.5.overhigh)
+saveRDS(ks.all.5.overhigh, file = "ks.pvals.all.md5.overhigh.RDS")
+
+ks.all.10.overhigh <- list()
+
+for(i in(1:1000)){
+  
+      nw_sim <- simulate(nw_md[[10]], nsim = 1, monitor = ~ degree(0:100) + meandeg)
+  
+      degtosamp <- degree(nw_sim, gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+      
+      degtable <- as.data.frame(cbind(degtosamp, 1:n_sim))
+      
+      nonransamp <- sample_n(degtable, 350, replace = FALSE, weight = (degtosamp + 0.1)) 
+      
+      nonransamp <- nonransamp[,2]
+
+  ks <- ks.boot(degree(get.inducedSubgraph(nw_sim, nonransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.10.overhigh[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.10.overhigh <- unlist(ks.all.10.overhigh)
+saveRDS(ks.all.10.overhigh, file = "ks.pvals.all.md10.overhigh.RDS")
+
+ks.all.20.overhigh <- list()
+
+for(i in(1:1000)){
+  
+      nw_sim <- simulate(nw_md[[20]], nsim = 1, monitor = ~ degree(0:100) + meandeg)
+  
+      degtosamp <- degree(nw_sim, gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+      
+      degtable <- as.data.frame(cbind(degtosamp, 1:n_sim))
+      
+      nonransamp <- sample_n(degtable, 350, replace = FALSE, weight = (degtosamp + 0.1)) 
+      
+      nonransamp <- nonransamp[,2]
+
+  ks <- ks.boot(degree(get.inducedSubgraph(nw_sim, nonransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.20.overhigh[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.20.overhigh <- unlist(ks.all.20.overhigh)
+saveRDS(ks.all.20.overhigh, file = "ks.pvals.all.md20.overhigh.RDS")
+
+
+# Oversampling low-transmitters - scenario 2b
+
+
+ks.all.2.overlow <- list()
+
+for(i in(1:1000)){
+  
+      nw_sim <- simulate(nw_md[[2]], nsim = 1, monitor = ~ degree(0:100) + meandeg)
+  
+      degtosamp <- degree(nw_sim, gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+      
+      degtable <- as.data.frame(cbind(degtosamp, 1:n_sim))
+      
+      nonransamp <- sample_n(degtable, 350, replace = FALSE, weight = (1/(degtosamp + 0.1))) # weight is inverse degree
+      
+      nonransamp <- nonransamp[,2]
+    
+      sim_deg <- degree(get.inducedSubgraph(nw_sim, nonransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[2]], nsim = 1) , nonransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.2.overlow[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.2.overlow <- unlist(ks.all.2.overlow)
+saveRDS(ks.all.2.overlow, file = "ks.pvals.all.md2.overlow.RDS")
+
+ks.all.5.overlow <- list()
+
+for(i in(1:1000)){
+  
+      nw_sim <- simulate(nw_md[[5]], nsim = 1, monitor = ~ degree(0:100) + meandeg)
+  
+      degtosamp <- degree(nw_sim, gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+      
+      degtable <- as.data.frame(cbind(degtosamp, 1:n_sim))
+      
+      nonransamp <- sample_n(degtable, 350, replace = FALSE, weight = (1/(degtosamp + 0.1))) # weight is inverse degree
+      
+      nonransamp <- nonransamp[,2]
+    
+      sim_deg <- degree(get.inducedSubgraph(nw_sim, nonransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[5]], nsim = 1) , nonransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.5.overlow[i] <- ks$ks.boot.pvalue
+
+}
+ks.all.5.overlow <- unlist(ks.all.5.overlow)
+saveRDS(ks.all.5.overlow, file = "ks.pvals.all.md5.overlow.RDS")
+
+ks.all.10.overlow <- list()
+
+for(i in(1:1000)){
+  
+      nw_sim <- simulate(nw_md[[10]], nsim = 1, monitor = ~ degree(0:100) + meandeg)
+  
+      degtosamp <- degree(nw_sim, gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+      
+      degtable <- as.data.frame(cbind(degtosamp, 1:n_sim))
+      
+      nonransamp <- sample_n(degtable, 350, replace = FALSE, weight = (1/(degtosamp + 0.1))) # weight is inverse degree
+      
+      nonransamp <- nonransamp[,2]
+    
+      sim_deg <- degree(get.inducedSubgraph(nw_sim, nonransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[10]], nsim = 1) , nonransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.10.overlow[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.10.overlow <- unlist(ks.all.10.overlow)
+saveRDS(ks.all.10.overlow, file = "ks.pvals.all.md10.overlow.RDS")
+
+ks.all.20.overlow <- list()
+
+for(i in(1:1000)){
+  
+      nw_sim <- simulate(nw_md[[20]], nsim = 1, monitor = ~ degree(0:100) + meandeg)
+  
+      degtosamp <- degree(nw_sim, gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+      
+      degtable <- as.data.frame(cbind(degtosamp, 1:n_sim))
+      
+      nonransamp <- sample_n(degtable, 350, replace = FALSE, weight = (1/(degtosamp + 0.1))) # weight is inverse degree
+      
+      nonransamp <- nonransamp[,2]
+    
+      sim_deg <- degree(get.inducedSubgraph(nw_sim, nonransamp), gmode = "graph" , cmode="freeman", ignore.eval = TRUE)
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[20]], nsim = 1) , nonransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.20.overlow[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.20.overlow <- unlist(ks.all.20.overlow)
+saveRDS(ks.all.20.overlow, file = "ks.pvals.all.md20.overlow.RDS")
+
+#ks.all.20.overlow <- readRDS(here("ks.pvals.all.md20.overlow.RDS"))
+#summary(ks.all.20.overlow)
+
+
+# Oversampling smear-pos 50/50 - scenario 3a
+nw_c1 <- list()
+nw_c1.2 <- readRDS(here("/Output/nw_2000_md_2_c1.RDS"))
+nw_c1.5 <- readRDS(here("/Output/nw_2000_md_5_c1.RDS"))
+nw_c1.10 <- readRDS(here("/Output/nw_2000_md_10_c1.RDS"))
+nw_c1.20 <- readRDS(here("/Output/nw_2000_md_20_c1.RDS"))
+
+#for some reason, these saved ERGMs are in 2nd position of a list, so fix this here.
+nw_c1[[2]] <- nw_c1.2[[2]]
+nw_c1[[5]] <- nw_c1.5[[5]]
+nw_c1[[10]] <- nw_c1.10[[10]]
+nw_c1[[20]] <- nw_c1.20[[20]]
+
+ks.all.2.c1 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_c1[[2]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.2.c1[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.2.c1 <- unlist(ks.all.2.c1)
+saveRDS(ks.all.2.c1, file = "ks.pvals.all.md2.c1.RDS")
+
+
+ks.all.5.c1 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_c1[[5]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.5.c1[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.5.c1 <- unlist(ks.all.5.c1)
+saveRDS(ks.all.5.c1, file = "ks.pvals.all.md5.c1.RDS")
+
+ks.all.10.c1 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_c1[[10]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.10.c1[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.10.c1 <- unlist(ks.all.10.c1)
+saveRDS(ks.all.10.c1, file = "ks.pvals.all.md10.c1.RDS")
+
+ks.all.20.c1 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_c1[[20]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.20.c1[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.20.c1 <- unlist(ks.all.20.c1)
+saveRDS(ks.all.20.c1, file = "ks.pvals.all.md20.c1.RDS")
+
+
+# Oversampling smear-pos 70/30 - scenario 3b
+
+nw_c2 <- list()
+nw_c2.2 <- readRDS(here("/Output/nw_2000_md_2_c2.RDS"))
+nw_c2.5 <- readRDS(here("/Output/nw_2000_md_5_c2.RDS"))
+nw_c2.10 <- readRDS(here("/Output/nw_2000_md_10_c2.RDS"))
+nw_c2.20 <- readRDS(here("/Output/nw_2000_md_20_c2.RDS"))
+
+#for some reason, these saved ERGMs are in 2nd position of a list, so fix this here.
+nw_c2[[2]] <- nw_c2.2[[2]]
+nw_c2[[5]] <- nw_c2.5[[5]]
+nw_c2[[10]] <- nw_c2.10[[10]]
+nw_c2[[20]] <- nw_c2.20[[20]]
+
+ks.all.2.c2 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_c2[[2]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.2.c2[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.2.c2 <- unlist(ks.all.2.c2)
+saveRDS(ks.all.2.c2, file = "ks.pvals.all.md2.c2.RDS")
+
+
+ks.all.5.c2 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_c2[[5]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.5.c2[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.5.c2 <- unlist(ks.all.5.c2)
+saveRDS(ks.all.5.c2, file = "ks.pvals.all.md5.c2.RDS")
+
+ks.all.10.c2 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_c2[[10]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.10.c2[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.10.c2 <- unlist(ks.all.10.c2)
+saveRDS(ks.all.10.c2, file = "ks.pvals.all.md10.c2.RDS")
+
+ks.all.20.c2 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_c2[[20]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.20.c2[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.20.c2 <- unlist(ks.all.20.c2)
+saveRDS(ks.all.20.c2, file = "ks.pvals.all.md20.c2.RDS")
+
+# Latent factor - scenario 4
+nw_md <- list()
+nw_md[[2]] <- readRDS(here("/Output/nw_2000_md_2_lf40in10.RDS"))
+nw_md[[5]] <- readRDS(here("/Output/nw_2000_md_5_lf40in10.RDS"))
+nw_md[[10]] <- readRDS(here("/Output/nw_2000_md_10_lf40in10.RDS"))
+nw_md[[20]] <- readRDS(here("/Output/nw_2000_md_20_lf40in10.RDS"))
+
+
+ks.all.2.lf <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[2]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.2.lf[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.2.lf <- unlist(ks.all.2.lf)
+saveRDS(ks.all.2.lf, file = "ks.pvals.all.md2.lf.RDS")
+
+ks.all.5.lf <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[5]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.5.lf[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.5.lf <- unlist(ks.all.5.lf)
+saveRDS(ks.all.5.lf, file = "ks.pvals.all.md5.lf.RDS")
+
+
+ks.all.10.lf <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[10]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.10.lf[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.10.lf <- unlist(ks.all.10.lf)
+saveRDS(ks.all.10.lf, file = "ks.pvals.all.md10.lf.RDS")
+
+
+ks.all.20.lf <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[20]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.20.lf[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.20.lf <- unlist(ks.all.20.lf)
+saveRDS(ks.all.20.lf, file = "ks.pvals.all.md20.lf.RDS")
+
+
+# Random sampling - scenario 1 - 3 SNPs
+
+ks.all.2.3snp <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[2]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le3) 
+
+  ks.all.2.3snp[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.2.3snp <- unlist(ks.all.2.3snp)
+saveRDS(ks.all.2.3snp, file = "ks.pvals.all.md2.3snp.RDS")
+
+ks.all.5.3snp <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[5]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le3) 
+
+  ks.all.5.3snp[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.5.3snp <- unlist(ks.all.5.3snp)
+saveRDS(ks.all.5.3snp, file = "ks.pvals.all.md5.3snp.RDS")
+
+ks.all.10.3snp <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[10]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le3) 
+
+  ks.all.10.3snp[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.10.3snp <- unlist(ks.all.10.3snp)
+saveRDS(ks.all.10.3snp, file = "ks.pvals.all.md10.3snp.RDS")
+
+ks.all.20.3snp <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[20]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le3) 
+
+  ks.all.20.3snp[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.20.3snp <- unlist(ks.all.20.3snp)
+saveRDS(ks.all.20.3snp, file = "ks.pvals.all.md20.3snp.RDS")
+
+
+
+# n = 4000 networks
+
+# Random sampling - scenario 1
+nw_md <- list()
+nw_md[[2]] <- readRDS(here("/Output/nw_4000_md_2_.RDS"))
+nw_md[[5]] <- readRDS(here("/Output/nw_4000_md_5_.RDS"))
+nw_md[[8]] <- readRDS(here("/Output/nw_4000_md_8_.RDS"))
+nw_md[[10]] <- readRDS(here("/Output/nw_4000_md_10_.RDS"))
+nw_md[[15]] <- readRDS(here("/Output/nw_4000_md_15_.RDS"))
+nw_md[[20]] <- readRDS(here("/Output/nw_4000_md_20_.RDS"))
+
+
+# Need to LOAD NW_SIM_UN with SIZE = 4000
+
+# K-S test for comparison to empirical network (p-value, null hypothesis is two are drawn from same underlying dstn)
+
+ks.all.2 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[2]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.2[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.2 <- unlist(ks.all.2)
+saveRDS(ks.all.2, file = "ks.pvals.all.md2.4000.RDS")
+
+
+
+
+ks.all.5 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[5]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.5[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.5 <- unlist(ks.all.5)
+saveRDS(ks.all.5, file = "ks.pvals.all.md5.4000.RDS")
+
+
+ks.all.10 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[10]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.10[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.10 <- unlist(ks.all.10)
+saveRDS(ks.all.10, file = "ks.pvals.all.md10.4000.RDS")
+
+
+ks.all.20 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[20]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.20[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.20 <- unlist(ks.all.20)
+saveRDS(ks.all.20, file = "ks.pvals.all.md20.4000.RDS")
+
+
+# Need to LOAD NW_SIM_UN with SIZE = 1500
+
+
+# Random sampling - scenario 1
+nw_md <- list()
+nw_md[[2]] <- readRDS(here("/Output/nw_1500_md_2_.RDS"))
+nw_md[[5]] <- readRDS(here("/Output/nw_1500_md_5_.RDS"))
+nw_md[[10]] <- readRDS(here("/Output/nw_1500_md_10_.RDS"))
+nw_md[[20]] <- readRDS(here("/Output/nw_1500_md_20_.RDS"))
+
+
+# K-S test for comparison to empirical network (p-value, null hypothesis is two are drawn from same underlying dstn)
+
+ks.all.2 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[2]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.2[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.2 <- unlist(ks.all.2)
+saveRDS(ks.all.2, file = "ks.pvals.all.md2.1500.RDS")
+
+
+
+
+ks.all.5 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[5]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.5[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.5 <- unlist(ks.all.5)
+saveRDS(ks.all.5, file = "ks.pvals.all.md5.1500.RDS")
+
+
+ks.all.10 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[10]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.10[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.10 <- unlist(ks.all.10)
+saveRDS(ks.all.10, file = "ks.pvals.all.md10.1500.RDS")
+
+
+ks.all.20 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[20]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.20[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.20 <- unlist(ks.all.20)
+saveRDS(ks.all.20, file = "ks.pvals.all.md20.1500.RDS")
+
+# Need to LOAD NW_SIM_UN with SIZE = 500
+
+
+# Random sampling - scenario 1
+nw_md <- list()
+nw_md[[2]] <- readRDS(here("nw_500_md_2_.RDS"))
+nw_md[[5]] <- readRDS(here("nw_500_md_5_.RDS"))
+nw_md[[10]] <- readRDS(here("nw_500_md_10_.RDS"))
+nw_md[[20]] <- readRDS(here("nw_500_md_20_.RDS"))
+
+
+# K-S test for comparison to empirical network (p-value, null hypothesis is two are drawn from same underlying dstn)
+
+ks.all.2 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[2]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.2[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.2 <- unlist(ks.all.2)
+saveRDS(ks.all.2, file = "ks.pvals.all.md2.500.RDS")
+
+
+
+
+ks.all.5 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[5]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.5[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.5 <- unlist(ks.all.5)
+saveRDS(ks.all.5, file = "ks.pvals.all.md5.500.RDS")
+
+
+ks.all.10 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[10]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.10[i] <- ks$ks.boot.pvalue
+  
+}
+ks.all.10 <- unlist(ks.all.10)
+saveRDS(ks.all.10, file = "ks.pvals.all.md10.500.RDS")
+
+
+ks.all.20 <- list()
+
+for(i in(1:1000)){
+  
+  ransamp <- sample(network.size(nw_sim_un), 350, replace = FALSE, prob = NULL)
+
+
+  ks <- ks.boot(degree(
+          get.inducedSubgraph(
+            simulate(nw_md[[20]], nsim = 1) , ransamp), 
+          gmode = "graph" , cmode="freeman", ignore.eval = TRUE),
+          deg_le5) 
+
+  ks.all.20[i] <- ks$ks.boot.pvalue
+  
+}
+
+ks.all.20 <- unlist(ks.all.20)
+saveRDS(ks.all.20, file = "ks.pvals.all.md20.500.RDS")
+
+
+```
+
