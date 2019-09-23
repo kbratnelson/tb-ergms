@@ -8,7 +8,7 @@ This repository includes source code for our analysis of missing cases in transm
 
 The models described are run in R using the [EpiModel](https://www.epimodel.org/) software.
 
-![Transmission network of XDR TB in KwaZulu-Natal, South Africa](https://github.com/kbratnelson/tb-ergms/blob/master/MissingNetworkData/Nelson_Fig6.3b.png)
+![Transmission network of XDR TB in KwaZulu-Natal, South Africa](https://github.com/kbratnelson/tb-ergms/blob/master/MissingNetworkData/Nelson_Fig4.3b.png)
 
 ------------------------------------------------------------------------
 
